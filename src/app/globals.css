@@ -1,0 +1,81 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --radius: 0.625rem;
+    --background: #f8fafc;
+    --foreground: #0f172a;
+    --card: #ffffff;
+    --card-foreground: #0f172a;
+    --primary: #e85c14;
+    --primary-foreground: #ffffff;
+    --secondary: #f1f5f9;
+    --secondary-foreground: #334155;
+    --muted: #f1f5f9;
+    --muted-foreground: #64748b;
+    --accent: #fff7ed;
+    --accent-foreground: #9a3412;
+    --destructive: #ef4444;
+    --border: #e2e8f0;
+    --input: #e2e8f0;
+    --ring: #e85c14;
+    --sidebar: #ffffff;
+    --sidebar-foreground: #0f172a;
+    --sidebar-border: #e2e8f0;
+    --sidebar-accent: #fff7ed;
+  }
+
+  .dark {
+    --background: #0f172a;
+    --foreground: #f1f5f9;
+    --card: #1e293b;
+    --card-foreground: #f1f5f9;
+    --primary: #f97316;
+    --primary-foreground: #ffffff;
+    --secondary: #1e293b;
+    --secondary-foreground: #cbd5e1;
+    --muted: #1e293b;
+    --muted-foreground: #94a3b8;
+    --accent: #431407;
+    --accent-foreground: #fdba74;
+    --destructive: #ef4444;
+    --border: #334155;
+    --input: #334155;
+    --ring: #f97316;
+    --sidebar: #0b1120;
+    --sidebar-foreground: #f1f5f9;
+    --sidebar-border: #1e293b;
+    --sidebar-accent: #431407;
+  }
+
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground antialiased;
+  }
+
+  /* ── Force 24-hour display in WebKit/Blink time inputs ── */
+  input[type="time"]::-webkit-datetime-edit-ampm-field {
+    display: none !important;
+  }
+  /* Joyride tour: elevate the active target above the overlay cutout */
+  [data-tour-active] {
+    z-index: 100000 !important;
+    isolation: isolate;
+    pointer-events: auto !important;
+  }
+
+  /* Prevent clipping of native dropdowns / date inputs inside elevated targets */
+  [data-tour-overflow-fix] {
+    overflow: visible !important;
+  }
+
+  /* Joyride overlay container must not capture pointer events — library handles dimming via SVG paths */
+  .react-joyride__overlay {
+    pointer-events: none !important;
+  }
+}
