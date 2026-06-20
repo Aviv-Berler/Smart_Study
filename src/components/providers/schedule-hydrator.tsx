@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { usePlannerSchedule } from "@/components/providers/planner-schedule-provider";
 import type { ScheduleGoalRecord } from "@/app/actions/planner";
 import type { CalendarBlock, Task } from "@/types/database";
@@ -22,20 +22,21 @@ export function ScheduleHydrator({
   goalRecords:       ScheduleGoalRecord[];
   children:          React.ReactNode;
 }) {
-  const { applyWeekData, loaded } = usePlannerSchedule();
+  const { applyWeekData } = usePlannerSchedule();
+  const didHydrateFromSsr = useRef(false);
 
   useEffect(() => {
-    if (!loaded) {
-      applyWeekData({
-        blocks,
-        progressBlocks,
-        tasks,
-        completedGoalKeys,
-        hasDraftBlocks,
-        goalRecords,
-      });
-    }
-  }, [loaded, blocks, progressBlocks, tasks, completedGoalKeys, hasDraftBlocks, goalRecords, applyWeekData]);
+    if (didHydrateFromSsr.current) return;
+    didHydrateFromSsr.current = true;
+    applyWeekData({
+      blocks,
+      progressBlocks,
+      tasks,
+      completedGoalKeys,
+      hasDraftBlocks,
+      goalRecords,
+    });
+  }, [applyWeekData, blocks, progressBlocks, tasks, completedGoalKeys, hasDraftBlocks, goalRecords]);
 
   return <>{children}</>;
 }

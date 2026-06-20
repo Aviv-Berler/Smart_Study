@@ -79,6 +79,10 @@ function minToTime(min: number): string {
   return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
 }
 
+function countDraftAiBlocks(blocks: CalendarBlock[]): number {
+  return blocks.filter((b) => b.kind === "ai" && !b.is_locked).length;
+}
+
 // ── Block colour logic ─────────────────────────────────────────────────────────
 function blockClass(b: CalendarBlock, missed = false): string {
   if (missed) {
@@ -881,7 +885,7 @@ function SmartSyncCard({
   hasDraftBlocks: boolean;
   planStartDate:  string;
   planEndDate:    string;
-  onSuccess: () => void;
+  onSuccess: () => void | Promise<void>;
 }) {
   const { translate } = useLanguage();
   const onboarding = useOnboardingOptional();
@@ -921,7 +925,7 @@ function SmartSyncCard({
       setAiMessage(result.ai_message ?? null);
       setConstraints("");
       onboarding?.signalTourAction("ai-generated");
-      onSuccess();
+      await onSuccess();
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Unexpected error.");
     } finally {
@@ -939,7 +943,7 @@ function SmartSyncCard({
       );
       setConflict(null);
       onboarding?.signalTourAction("ai-generated");
-      onSuccess();
+      await onSuccess();
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Unexpected error.");
     } finally {
@@ -956,7 +960,7 @@ function SmartSyncCard({
           `${translate("planApproved")} (${isolateLtr(result.approved ?? 0)})`,
         );
         setWasApproved(true);
-        onSuccess();
+        await onSuccess();
       } catch (err) {
         toast.error(err instanceof Error ? err.message : "Unexpected error.");
       }
@@ -970,7 +974,7 @@ function SmartSyncCard({
         if (!result.success) { toast.error(result.error ?? "Nothing to undo."); return; }
         toast.success("Undo successful — task progress restored.");
         setWasApproved(false);
-        onSuccess();
+        await onSuccess();
       } catch (err) {
         toast.error(err instanceof Error ? err.message : "Unexpected error.");
       }
@@ -1120,15 +1124,16 @@ export function PlannerCalendar({
   /** Week already loaded — avoids duplicate fetch when navigating back. */
   const loadedWeekStart = useRef<string | null>(null);
   const didMountFetch = useRef(false);
-
-  useEffect(() => { setLocalBlocks(normalizeBlocks(initialBlocks)); }, [initialBlocks, normalizeBlocks]);
-  useEffect(() => { setTaskList(tasks); }, [tasks]);
-  useEffect(() => { setLockedHistory(initialLockedHistory); }, [initialLockedHistory]);
-  useEffect(() => { setCompletedGoalKeys(initialCompletedGoalKeys); }, [initialCompletedGoalKeys]);
-  useEffect(() => { setHasDraftBlocks(initialHasDraftBlocks); }, [initialHasDraftBlocks]);
+  /** After AI mutations: hold local state until SSR props match the client fetch. */
+  const skipSsrSyncRef = useRef(false);
+  const expectedDraftCountRef = useRef(0);
 
   const applyWeekData = useCallback((data: Awaited<ReturnType<typeof loadPlannerWeekData>>, weekStart: string) => {
     loadedWeekStart.current = weekStart;
+    const draftCount = countDraftAiBlocks(data.calendarBlocks);
+    if (skipSsrSyncRef.current) {
+      expectedDraftCountRef.current = draftCount;
+    }
     setLocalBlocks(normalizeBlocks(data.calendarBlocks));
     setLockedHistory(data.lockedHistoryBlocks);
     setCompletedGoalKeys(data.completedGoalKeys);
@@ -1149,10 +1154,18 @@ export function PlannerCalendar({
     try {
       const data = await loadPlannerWeekData(weekStart, weekEnd);
       applyWeekData(data, weekStart);
+      return data;
     } catch {
       toast.error("Could not load week data.");
+      return null;
     }
   }, [weekBounds, applyWeekData]);
+
+  const syncAfterPlannerMutation = useCallback(async () => {
+    skipSsrSyncRef.current = true;
+    await refreshCurrentWeek();
+    router.refresh();
+  }, [refreshCurrentWeek, router]);
 
   // Client fetch on mount — SSR props may be empty/stale; this matches post-AI refresh path.
   useEffect(() => {
@@ -1183,22 +1196,44 @@ export function PlannerCalendar({
     return () => { cancelled = true; };
   }, [weekBounds.weekStart, weekBounds.weekEnd, applyWeekData]);
 
-  // Sync SSR props when router.refresh updates the initial week
+  // Sync SSR props when router.refresh updates the initial week — never clobber fresher client state.
   useEffect(() => {
     if (weekBounds.weekStart !== initialWeekStart) return;
-    if (initialBlocks.length > 0) {
-      setLocalBlocks(normalizeBlocks(initialBlocks));
+
+    const initialDrafts = countDraftAiBlocks(initialBlocks);
+    const localDrafts = countDraftAiBlocks(localBlocks);
+
+    const syncMetadataOnly = () => {
+      setLockedHistory(initialLockedHistory);
+      setCompletedGoalKeys(initialCompletedGoalKeys);
+      setTaskList(tasks);
+    };
+
+    if (skipSsrSyncRef.current) {
+      if (initialDrafts !== expectedDraftCountRef.current) {
+        syncMetadataOnly();
+        return;
+      }
+      skipSsrSyncRef.current = false;
+    } else if (localDrafts > initialDrafts) {
+      syncMetadataOnly();
+      return;
     }
+
+    setLocalBlocks(normalizeBlocks(initialBlocks));
     setLockedHistory(initialLockedHistory);
     setCompletedGoalKeys(initialCompletedGoalKeys);
     setHasDraftBlocks(initialHasDraftBlocks);
+    setTaskList(tasks);
   }, [
     weekBounds.weekStart,
     initialWeekStart,
     initialBlocks,
+    localBlocks,
     initialLockedHistory,
     initialCompletedGoalKeys,
     initialHasDraftBlocks,
+    tasks,
     normalizeBlocks,
   ]);
 
@@ -1402,10 +1437,7 @@ export function PlannerCalendar({
         hasDraftBlocks={hasDrafts}
         planStartDate={planHorizon.startDate}
         planEndDate={planHorizon.endDate}
-        onSuccess={() => {
-          void refreshCurrentWeek();
-          router.refresh();
-        }}
+        onSuccess={syncAfterPlannerMutation}
       />
 
       <section className="space-y-3">

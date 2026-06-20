@@ -1331,7 +1331,7 @@ CONFLICT (time is insufficient — max 3 options, titles 1-4 words):
     }
   }
 
-  revalidatePath("/planner");
+  revalidatePath("/planner", "page");
   revalidatePath("/", "layout");
 
   return {
@@ -1356,7 +1356,7 @@ export async function acceptConflictOption(blocks: PlannerLLMBlock[]) {
     return { success: false as const, error: e instanceof Error ? e.message : "DB error." };
   }
 
-  revalidatePath("/planner");
+  revalidatePath("/planner", "page");
   revalidatePath("/", "layout");
   return { success: true as const, block_count: blocks.length };
 }
