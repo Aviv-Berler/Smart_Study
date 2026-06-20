@@ -41,7 +41,7 @@ export function OnboardingProvider({ children }: { children: React.ReactNode }) 
   const [tourActive, setTourActive] = useState(false);
   const [tourStepIndex, setTourStepIndex] = useState(0);
   const [showFinishModal, setShowFinishModal] = useState(false);
-  const { collapsed, setCollapsed } = useSidebar();
+  const { collapsed, setCollapsed, setMobileOpen } = useSidebar();
 
   useEffect(() => {
     if (!userId) return;
@@ -58,10 +58,12 @@ export function OnboardingProvider({ children }: { children: React.ReactNode }) 
   }, [userId]);
 
   useEffect(() => {
-    if (tourActive && collapsed) {
-      setCollapsed(false);
+    if (!tourActive) return;
+    if (collapsed) setCollapsed(false);
+    if (window.matchMedia("(max-width: 767px)").matches) {
+      setMobileOpen(true);
     }
-  }, [tourActive, collapsed, setCollapsed]);
+  }, [tourActive, collapsed, setCollapsed, setMobileOpen]);
 
   const markComplete = useCallback(() => {
     if (!userId) {

@@ -1,6 +1,6 @@
 "use client";
 
-import { BookOpen, CalendarDays, PanelLeft } from "lucide-react";
+import { BookOpen, CalendarDays, Menu, PanelLeft } from "lucide-react";
 import { useOnboarding } from "@/components/providers/onboarding-provider";
 import { LanguageToggle } from "@/components/layout/language-toggle";
 import { ThemeToggle } from "@/components/layout/theme-toggle";
@@ -32,7 +32,7 @@ export function AppHeader({
   subtitle,
   subtitleKey,
 }: AppHeaderProps) {
-  const { toggleCollapsed } = useSidebar();
+  const { toggleCollapsed, toggleMobileMenu } = useSidebar();
   const { locale, translate } = useLanguage();
   const { profile } = useUser();
   const { openGuide } = useOnboarding();
@@ -41,24 +41,34 @@ export function AppHeader({
   const displaySubtitle =
     subtitle ?? (subtitleKey ? translate(subtitleKey) : undefined);
 
-  // Show first name only (or email prefix)
   const firstName =
     profile?.full_name?.split(" ")[0] ||
     profile?.email?.split("@")[0] ||
     null;
 
   return (
-    <header className="sticky top-0 z-20 flex h-14 items-center justify-between border-b border-border bg-card/80 px-4 backdrop-blur-sm sm:px-6">
-      <div className="flex items-center gap-3">
+    <header className="sticky top-0 z-20 flex h-14 items-center justify-between border-b border-border bg-card/80 px-4 backdrop-blur-sm sm:px-6 max-md:min-w-0 max-md:w-full">
+      <div className="flex min-w-0 items-center gap-3 max-md:flex-1">
         <Button
           variant="outline"
           size="icon"
-          className="h-9 w-9 shrink-0"
+          className="h-9 w-9 shrink-0 md:hidden"
+          onClick={toggleMobileMenu}
+          aria-label="Open menu"
+        >
+          <Menu className="h-4 w-4" />
+        </Button>
+
+        <Button
+          variant="outline"
+          size="icon"
+          className="hidden h-9 w-9 shrink-0 md:inline-flex"
           onClick={toggleCollapsed}
           aria-label="Toggle sidebar"
         >
           <PanelLeft className="h-4 w-4" />
         </Button>
+
         {(displayTitle || displaySubtitle) && (
           <div className="min-w-0">
             {displayTitle && (
@@ -84,7 +94,7 @@ export function AppHeader({
         )}
       </div>
 
-      <div className="flex items-center gap-2">
+      <div className="flex shrink-0 items-center gap-2">
         <div className="hidden items-center gap-1.5 text-xs text-muted-foreground sm:flex">
           <CalendarDays className="h-3.5 w-3.5" />
           <span>{formatToday(locale)}</span>

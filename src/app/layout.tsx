@@ -17,7 +17,7 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en" suppressHydrationWarning>
-      <body>
+      <body className="max-md:overflow-x-hidden max-md:w-full">
         <ThemeProvider>
           <LanguageProvider>
             {children}

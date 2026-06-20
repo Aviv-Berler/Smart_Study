@@ -55,13 +55,13 @@ export function Dashboard({ milestones, todaySchedules, driftState }: Props) {
 
       <DriftAlertBanner drift={driftState} />
 
-      <div className="space-y-8 p-4 sm:p-6">
+      <div className="space-y-8 p-4 sm:p-6 max-md:min-w-0 max-md:w-full max-md:overflow-x-hidden">
         <MilestonesSection milestones={milestones} />
 
-        <Card className="border-border shadow-sm">
+        <Card className="border-border shadow-sm max-md:min-w-0">
           <CardContent className="space-y-2 p-4">
-            <div className="flex items-center justify-between text-sm">
-              <span className="font-medium">{translate("overallProgress")}</span>
+            <div className="flex items-center justify-between gap-2 text-sm max-md:min-w-0">
+              <span className="min-w-0 truncate font-medium">{translate("overallProgress")}</span>
               <span className="flex flex-row items-center gap-1 font-mono font-semibold text-primary">
                 <FractionCounter numerator={finishedCount} denominator={goals.length} />
                 <span className="font-normal text-muted-foreground">

@@ -8,7 +8,7 @@ import {
 import {
   CalendarDays, Sparkles,
   Loader2, CheckCircle2, AlertTriangle, Zap, RotateCcw, Trash2, Pencil, Plus,
-  ChevronLeft, ChevronRight, GripVertical,
+  ChevronLeft, ChevronRight, GripVertical, Menu,
 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -25,6 +25,7 @@ import {
   loadPlannerWeekData,
 } from "@/app/actions/planner";
 import { useLanguage } from "@/components/providers/language-provider";
+import { useSidebar } from "@/components/layout/sidebar-context";
 import { useOnboardingOptional } from "@/components/providers/onboarding-provider";
 import { usePlannerSchedule } from "@/components/providers/planner-schedule-provider";
 import {
@@ -1093,6 +1094,7 @@ export function PlannerCalendar({
 }) {
   const router = useRouter();
   const { translate } = useLanguage();
+  const { toggleMobileMenu } = useSidebar();
   const onboarding = useOnboardingOptional();
   const { syncBlocks, applyWeekData: applyScheduleWeekData, progressBlocks } = usePlannerSchedule();
 
@@ -1383,6 +1385,19 @@ export function PlannerCalendar({
 
   return (
     <div className="space-y-6">
+      <div className="sticky top-0 z-20 flex justify-start border-b border-border bg-background/95 px-4 py-2 backdrop-blur-sm md:hidden">
+        <Button
+          type="button"
+          variant="outline"
+          size="icon"
+          className="h-9 w-9 shrink-0"
+          onClick={toggleMobileMenu}
+          aria-label="Open menu"
+        >
+          <Menu className="h-4 w-4" />
+        </Button>
+      </div>
+
       <SmartSyncCard
         hasDraftBlocks={hasDrafts}
         planStartDate={planHorizon.startDate}
