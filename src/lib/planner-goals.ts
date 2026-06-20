@@ -1,4 +1,4 @@
-import { goalCompletionKey } from "@/lib/drift-detection";
+import { goalCompletionKey, isMissedBlock } from "@/lib/drift-detection";
 import { normalizeTimeKey, toDateKey } from "@/lib/plan-horizon";
 import type { CalendarBlock, DailyGoalTableRow, Task } from "@/types/database";
 
@@ -107,29 +107,33 @@ export function buildCumulativeBlockIndex(allBlocks: CalendarBlock[]): Cumulativ
   return { byTask, titleByTask };
 }
 
-/** Prefix sums of only logged/completed session blocks */
+/** Prefix sums of only logged/completed session blocks (excludes missed/red blocks). */
 export function buildLoggedCumulativeIndex(
   allBlocks: CalendarBlock[],
   completedGoals: Set<string>,
+  today: string,
 ): CumulativeBlockIndex {
   const logged = allBlocks.filter((b) => {
     if (b.kind !== "ai" && b.kind !== "manual") return false;
     const taskId = normalizeTaskId(b.task_id);
     if (!taskId) return false;
+    if (isMissedBlock(b, today, completedGoals)) return false;
     return completedGoals.has(goalCompletionKey(taskId, toDateKey(b.scheduled_date)));
   });
   return buildCumulativeBlockIndex(logged);
 }
 
-/** Prefix sums of scheduled blocks not yet logged — avoids double-counting with base progress */
+/** Prefix sums of scheduled blocks not yet logged — excludes missed/red blocks. */
 export function buildUncompletedCumulativeIndex(
   allBlocks: CalendarBlock[],
   completedGoals: Set<string>,
+  today: string,
 ): CumulativeBlockIndex {
   const pending = allBlocks.filter((b) => {
     if (b.kind !== "ai" && b.kind !== "manual") return false;
     const taskId = normalizeTaskId(b.task_id);
     if (!taskId) return false;
+    if (isMissedBlock(b, today, completedGoals)) return false;
     return !completedGoals.has(goalCompletionKey(taskId, toDateKey(b.scheduled_date)));
   });
   return buildCumulativeBlockIndex(pending);
@@ -245,8 +249,8 @@ export function computeLiveDailyGoals(
   completedGoals: Set<string>,
   todayKey: string,
 ): LiveDailyGoalEntry[][] {
-  const uncompletedIndex = buildUncompletedCumulativeIndex(progressBlocks, completedGoals);
-  const loggedIndex      = buildLoggedCumulativeIndex(progressBlocks, completedGoals);
+  const uncompletedIndex = buildUncompletedCumulativeIndex(progressBlocks, completedGoals, todayKey);
+  const loggedIndex      = buildLoggedCumulativeIndex(progressBlocks, completedGoals, todayKey);
 
   return dayKeys.map((dayStr) => {
     const scheduledByTask = new Map<string, number>();

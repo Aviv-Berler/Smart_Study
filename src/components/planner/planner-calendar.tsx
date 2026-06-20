@@ -83,6 +83,10 @@ function countDraftAiBlocks(blocks: CalendarBlock[]): number {
   return blocks.filter((b) => b.kind === "ai" && !b.is_locked).length;
 }
 
+function calendarBlocksEqual(a: CalendarBlock[], b: CalendarBlock[]): boolean {
+  return JSON.stringify(a) === JSON.stringify(b);
+}
+
 // ── Block colour logic ─────────────────────────────────────────────────────────
 function blockClass(b: CalendarBlock, missed = false): string {
   if (missed) {
@@ -994,7 +998,7 @@ function SmartSyncCard({
           </div>
         </div>
 
-        <div className="flex flex-1 flex-col gap-1.5">
+        <div className="flex min-w-0 flex-1 flex-col gap-1.5">
           <label htmlFor="constraints" className="text-xs font-medium text-muted-foreground">
             {translate("constraintsLabel")}
           </label>
@@ -1008,6 +1012,12 @@ function SmartSyncCard({
             dir="auto"
             className="w-full resize-none rounded-md border border-input bg-background px-3 py-2 text-sm placeholder:text-muted-foreground/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
           />
+          <p
+            className="mt-2 break-words rounded-md bg-red-50/50 p-2 text-[10px] leading-tight text-destructive dark:bg-red-900/20 md:text-xs"
+            role="note"
+          >
+            <AutoDirText>{translate("generationLimitsNote")}</AutoDirText>
+          </p>
         </div>
 
         <div className="flex shrink-0 flex-col gap-2 sm:items-end">
@@ -1220,7 +1230,10 @@ export function PlannerCalendar({
       return;
     }
 
-    setLocalBlocks(normalizeBlocks(initialBlocks));
+    const normalizedInitial = normalizeBlocks(initialBlocks);
+    if (!calendarBlocksEqual(normalizedInitial, localBlocks)) {
+      setLocalBlocks(normalizedInitial);
+    }
     setLockedHistory(initialLockedHistory);
     setCompletedGoalKeys(initialCompletedGoalKeys);
     setHasDraftBlocks(initialHasDraftBlocks);

@@ -2,8 +2,11 @@
 
 import { differenceInCalendarDays } from "date-fns";
 import { revalidatePath } from "next/cache";
+import Groq from "groq-sdk";
+import type { ChatCompletion } from "groq-sdk/resources/chat/completions";
+import { APIError } from "groq-sdk";
 import { createClient } from "@/utils/supabase/server";
-import { groq } from "@/lib/groq";
+import { parseGroqApiKeys } from "@/lib/groq";
 import { getHorizonDateStrings, getPlanHorizon, getHistoryStart, toDateKey, normalizeTimeKey } from "@/lib/plan-horizon";
 import { isolateLtr } from "@/lib/bidi";
 import {
@@ -783,6 +786,101 @@ async function insertDraftBlocks(
   if (insErr) throw new Error(insErr.message);
 }
 
+// ── Groq key rotation + rate limiting ─────────────────────────────────────────
+
+const PLANNER_GEN_LOG_TITLE = "__planner_gen_log__";
+const PLANNER_GEN_LOG_DATE  = "1970-01-01";
+const PLANNER_GEN_LIMIT     = 3;
+const PLANNER_GEN_WINDOW_MS = 60 * 60 * 1000;
+const GROQ_MAX_RETRIES      = 3;
+const GROQ_RATE_LIMIT_MSG =
+  "You have reached the limit of 3 automatic schedules per hour. Please try again later.";
+
+function isGroqRetryableError(err: unknown): boolean {
+  if (err instanceof APIError) {
+    return err.status === 401 || err.status === 429 || err.status === 503;
+  }
+  const status = (err as { status?: number }).status;
+  return status === 401 || status === 429 || status === 503;
+}
+
+async function callGroqChatCompletionWithFailover(
+  params: Omit<Parameters<Groq["chat"]["completions"]["create"]>[0], "stream">,
+): Promise<ChatCompletion> {
+  let pool = parseGroqApiKeys();
+  if (pool.length === 0) {
+    throw new Error("Groq API is not configured.");
+  }
+
+  let lastError: unknown;
+  let retries = 0;
+
+  while (pool.length > 0 && retries <= GROQ_MAX_RETRIES) {
+    const keyIndex = Math.floor(Math.random() * pool.length);
+    const apiKey   = pool[keyIndex];
+    const client   = new Groq({ apiKey });
+
+    try {
+      return await client.chat.completions.create({
+        ...params,
+        stream: false,
+      });
+    } catch (err) {
+      lastError = err;
+      if (!isGroqRetryableError(err) || retries >= GROQ_MAX_RETRIES) {
+        throw err;
+      }
+      pool = pool.filter((_, i) => i !== keyIndex);
+      retries += 1;
+      console.warn(
+        `[planner] Groq ${(err as APIError).status ?? "error"} on key index ${keyIndex}; ` +
+        `retry ${retries}/${GROQ_MAX_RETRIES} with ${pool.length} key(s) left.`,
+      );
+    }
+  }
+
+  throw lastError instanceof Error
+    ? lastError
+    : new Error("All Groq API keys are rate-limited or unavailable. Please try again later.");
+}
+
+async function countRecentPlannerGenerations(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  userId: string,
+): Promise<number> {
+  const since = new Date(Date.now() - PLANNER_GEN_WINDOW_MS).toISOString();
+  const { count, error } = await supabase
+    .from("scheduled_blocks")
+    .select("id", { count: "exact", head: true })
+    .eq("user_id", userId)
+    .eq("kind", "ai")
+    .eq("title", PLANNER_GEN_LOG_TITLE)
+    .gte("created_at", since);
+
+  if (error) throw new Error(error.message);
+  return count ?? 0;
+}
+
+async function recordPlannerGenerationAttempt(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  userId: string,
+): Promise<void> {
+  const { error } = await supabase.from("scheduled_blocks").insert({
+    user_id:        userId,
+    task_id:        null,
+    title:          PLANNER_GEN_LOG_TITLE,
+    scheduled_date: PLANNER_GEN_LOG_DATE,
+    start_time:     "00:00",
+    end_time:       "00:01",
+    is_locked:      true,
+    kind:           "ai",
+  });
+
+  if (error) {
+    console.error("[planner] generation log insert error:", error.message);
+  }
+}
+
 // ── Drift / missed-block detection ────────────────────────────────────────────
 
 async function loadMissedDriftContext(
@@ -931,6 +1029,19 @@ export async function generateSchedulePlan(
   const supabase = await createClient();
   const { data: { user }, error: authError } = await supabase.auth.getUser();
   if (authError || !user) return { success: false as const, error: "Not authenticated" };
+
+  try {
+    const recentGenerations = await countRecentPlannerGenerations(supabase, user.id);
+    if (recentGenerations >= PLANNER_GEN_LIMIT) {
+      return { success: false as const, error: GROQ_RATE_LIMIT_MSG };
+    }
+  } catch (e) {
+    console.error("[planner] rate-limit check error:", e);
+    return {
+      success: false as const,
+      error: e instanceof Error ? e.message : "Could not verify generation limit.",
+    };
+  }
 
   // ── Clean-slate — delete existing AI draft blocks from plan start forward ───
   const { startDate: cleanFrom, endDate: cleanTo, planDuration } = getPlanHorizon();
@@ -1181,7 +1292,9 @@ CONFLICT (time is insufficient — max 3 options, titles 1-4 words):
   // ── LLM call ──────────────────────────────────────────────────────────────
   let parsed: LLMResponse;
   try {
-    const response = await groq.chat.completions.create({
+    await recordPlannerGenerationAttempt(supabase, user.id);
+
+    const response = await callGroqChatCompletionWithFailover({
       messages: [
         {
           role: "system",
@@ -1216,6 +1329,12 @@ CONFLICT (time is insufficient — max 3 options, titles 1-4 words):
     console.log("[planner] status:", parsed.status);
   } catch (e) {
     console.error("[planner] Groq/parse error:", e);
+    if (isGroqRetryableError(e)) {
+      return {
+        success: false as const,
+        error: "AI scheduling is temporarily unavailable due to high demand. Please try again in a few minutes.",
+      };
+    }
     return { success: false as const, error: e instanceof Error ? e.message : "AI call failed." };
   }
 

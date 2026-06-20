@@ -189,6 +189,8 @@ const translations = {
     smartSyncDesc: "AI study planner",
     constraintsLabel: "Any special constraints for the next few days?",
     constraintsPlaceholder: "e.g. No studying Thursday evening, part-time shift on Friday…",
+    generationLimitsNote:
+      "Note: Limited to 3 generations per hour. The AI plans around your existing schedule – for a completely new plan, clear the calendar blocks first.",
     generatePlan: "Generate Plan",
     generatingPlan: "Generating…",
     approvePlan: "Approve Plan",
@@ -410,6 +412,8 @@ const translations = {
     smartSyncDesc: "מתכנן לימודים בבינה מלאכותית",
     constraintsLabel: "אילוצים מיוחדים לימים הקרובים?",
     constraintsPlaceholder: "למשל, בלי לימודים בחמישי בערב, משמרת ביום שישי…",
+    generationLimitsNote:
+      "שים לב: ניתן לייצר עד 3 תוכניות בשעה. ה-AI מתכנן סביב הלו\"ז הקיים – לקבלת תוכנית חדשה לגמרי, יש לנקות את הבלוקים מהיומן תחילה.",
     generatePlan: "צור תוכנית",
     generatingPlan: "יוצר…",
     approvePlan: "אשר תוכנית",
