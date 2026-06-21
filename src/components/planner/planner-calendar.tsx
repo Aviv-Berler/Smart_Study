@@ -21,6 +21,7 @@ import {
   approvePlan,
   updateBlockTime,
   deleteBlock,
+  discardDraftPlan,
   undoApproval,
   clearPlannerRange,
   createManualBlock,
@@ -83,6 +84,12 @@ function minToTime(min: number): string {
 
 function countDraftAiBlocks(blocks: CalendarBlock[]): number {
   return blocks.filter((b) => b.kind === "ai" && !b.is_locked).length;
+}
+
+/** True when the block id is a persisted scheduled_blocks UUID (not a synthetic fixed-slot id). */
+function isPersistedBlockId(id: string): boolean {
+  if (id.startsWith("fixed-")) return false;
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id);
 }
 
 function calendarBlocksEqual(a: CalendarBlock[], b: CalendarBlock[]): boolean {
@@ -888,11 +895,13 @@ function SmartSyncCard({
   planStartDate,
   planEndDate,
   onSuccess,
+  onDiscard,
 }: {
   hasDraftBlocks: boolean;
   planStartDate:  string;
   planEndDate:    string;
   onSuccess: () => void | Promise<void>;
+  onDiscard: () => void | Promise<void>;
 }) {
   const { translate } = useLanguage();
   const onboarding = useOnboardingOptional();
@@ -903,9 +912,10 @@ function SmartSyncCard({
   const [wasApproved,  setWasApproved]  = useState(false);
   const [acceptingIdx, setAcceptingIdx] = useState<number | null>(null);
   const [approving,    startApprove]    = useTransition();
+  const [discarding,   startDiscard]    = useTransition();
   const [undoing,      startUndo]       = useTransition();
 
-  const busy = loading || approving || undoing || acceptingIdx !== null;
+  const busy = loading || approving || discarding || undoing || acceptingIdx !== null;
 
   const handleGenerate = async () => {
     setLoading(true);
@@ -956,6 +966,16 @@ function SmartSyncCard({
     } finally {
       setAcceptingIdx(null);
     }
+  };
+
+  const handleDiscard = () => {
+    startDiscard(async () => {
+      try {
+        await onDiscard();
+      } catch (err) {
+        toast.error(err instanceof Error ? err.message : "Could not discard plan.");
+      }
+    });
   };
 
   const handleApprove = () => {
@@ -1035,11 +1055,22 @@ function SmartSyncCard({
           </Button>
 
           {hasDraftBlocks && (
-            <Button variant="outline" onClick={handleApprove} disabled={busy}
-              className="gap-2 border-emerald-500/50 text-emerald-700 hover:bg-emerald-50 dark:text-emerald-400 dark:hover:bg-emerald-950">
-              {approving ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
-              {approving ? translate("approvingPlan") : translate("approvePlan")}
-            </Button>
+            <>
+              <Button variant="outline" onClick={handleApprove} disabled={busy}
+                className="gap-2 border-emerald-500/50 text-emerald-700 hover:bg-emerald-50 dark:text-emerald-400 dark:hover:bg-emerald-950">
+                {approving ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
+                {approving ? translate("approvingPlan") : translate("approvePlan")}
+              </Button>
+              <Button
+                variant="outline"
+                onClick={handleDiscard}
+                disabled={busy}
+                className="gap-2 border-destructive/40 text-destructive hover:bg-destructive/10"
+              >
+                {discarding ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
+                {discarding ? translate("discardingPlan") : translate("discardPlan")}
+              </Button>
+            </>
           )}
 
           {wasApproved && (
@@ -1257,6 +1288,10 @@ export function PlannerCalendar({
       }
       skipSsrSyncRef.current = false;
     } else if (localDrafts > initialDrafts) {
+      syncMetadataOnly();
+      return;
+    } else if (localDrafts < initialDrafts) {
+      // Draft(s) removed locally (delete/discard) — don't restore from stale SSR props.
       syncMetadataOnly();
       return;
     }
@@ -1477,12 +1512,53 @@ export function PlannerCalendar({
   // ── Delete ────────────────────────────────────────────────────────────────
   const handleBlockDelete = async (blockId: string) => {
     const original = localBlocks.find(b => b.id === blockId);
-    setLocalBlocks(prev => prev.filter(b => b.id !== blockId));
+    if (!original) return;
+
+    const persisted = isPersistedBlockId(blockId);
+
+    setLocalBlocks(prev => {
+      const next = prev.filter(b => b.id !== blockId);
+      setHasDraftBlocks(next.some(b => b.kind === "ai" && !b.is_locked));
+      return next;
+    });
+
+    if (!persisted) {
+      return;
+    }
+
     const result = await deleteBlock(blockId);
     if (!result.success) {
       toast.error(`Could not delete block: ${result.error}`);
-      if (original) setLocalBlocks(prev => [...prev, original]);
+      setLocalBlocks(prev => {
+        const next = [...prev, original];
+        setHasDraftBlocks(next.some(b => b.kind === "ai" && !b.is_locked));
+        return next;
+      });
+      return;
     }
+
+    expectedDraftCountRef.current = countDraftAiBlocks(
+      localBlocks.filter(b => b.id !== blockId),
+    );
+    skipSsrSyncRef.current = true;
+    await syncAfterPlannerMutation();
+  };
+
+  const handleDiscardPlan = async () => {
+    setLocalBlocks(prev => prev.filter(b => !(b.kind === "ai" && !b.is_locked)));
+    setHasDraftBlocks(false);
+    expectedDraftCountRef.current = 0;
+
+    const result = await discardDraftPlan();
+    if (!result.success) {
+      toast.error(result.error ?? "Could not discard plan.");
+      await refreshCurrentWeek();
+      return;
+    }
+
+    toast.success(translate("planDiscarded"));
+    skipSsrSyncRef.current = true;
+    await syncAfterPlannerMutation();
   };
 
   const planHorizon = getPlanHorizon();
@@ -1508,6 +1584,7 @@ export function PlannerCalendar({
         planStartDate={planHorizon.startDate}
         planEndDate={planHorizon.endDate}
         onSuccess={syncAfterPlannerMutation}
+        onDiscard={handleDiscardPlan}
       />
 
       <section className="space-y-3">

@@ -8,6 +8,7 @@ import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { createClient } from "@/utils/supabase/client";
+import { buildAuthCallbackUrl } from "@/lib/auth-url";
 import { cn } from "@/lib/utils";
 
 type Mode = "signin" | "signup";
@@ -93,7 +94,8 @@ function LoginForm() {
     setError(null);
     setOauthLoading(true);
     try {
-      const callbackUrl = `${window.location.origin}/auth/callback?next=/`;
+      const next = searchParams.get("next") ?? "/";
+      const callbackUrl = buildAuthCallbackUrl(window.location.origin, next);
       const { error } = await supabase.auth.signInWithOAuth({
         provider: "google",
         options: { redirectTo: callbackUrl },

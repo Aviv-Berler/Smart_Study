@@ -1527,7 +1527,29 @@ export async function deleteBlock(blockId: string) {
 
   if (error) return { success: false as const, error: error.message };
   revalidatePath("/planner");
+  revalidatePath("/", "layout");
   return { success: true as const };
+}
+
+/** Bulk reject: remove all unapproved AI draft blocks and exit review mode. */
+export async function discardDraftPlan() {
+  const supabase = await createClient();
+  const { data: { user }, error: authError } = await supabase.auth.getUser();
+  if (authError || !user) return { success: false as const, error: "Not authenticated" };
+
+  const { data, error } = await supabase
+    .from("scheduled_blocks")
+    .delete()
+    .eq("user_id", user.id)
+    .eq("kind", "ai")
+    .eq("is_locked", false)
+    .select("id");
+
+  if (error) return { success: false as const, error: error.message };
+
+  revalidatePath("/planner");
+  revalidatePath("/", "layout");
+  return { success: true as const, deleted: data?.length ?? 0 };
 }
 
 // ── approvePlan ───────────────────────────────────────────────────────────────
