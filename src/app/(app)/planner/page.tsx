@@ -1,10 +1,12 @@
+import { Suspense } from "react";
 import { PlannerCalendar } from "@/components/planner/planner-calendar";
+import { PlannerPageSkeleton } from "@/components/planner/planner-skeleton";
 import { ScheduleHydrator } from "@/components/providers/schedule-hydrator";
 import { loadPlannerWeekData } from "@/app/actions/planner";
 import { getWeekBounds } from "@/lib/plan-horizon";
 import { todayDateString } from "@/lib/drift-detection";
 
-export default async function PlannerPage() {
+async function PlannerPageContent() {
   const { weekStart, weekEnd } = getWeekBounds(todayDateString());
   const weekData = await loadPlannerWeekData(weekStart, weekEnd);
 
@@ -28,5 +30,13 @@ export default async function PlannerPage() {
         tasks={weekData.tasks}
       />
     </ScheduleHydrator>
+  );
+}
+
+export default function PlannerPage() {
+  return (
+    <Suspense fallback={<PlannerPageSkeleton />}>
+      <PlannerPageContent />
+    </Suspense>
   );
 }

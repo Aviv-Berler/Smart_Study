@@ -928,23 +928,26 @@ async function loadMissedDriftContext(
     ...new Set(pastBlocks.map((b) => b.task_id).filter((id): id is string => Boolean(id))),
   ];
 
-  const { data: goalRows } = await supabase
-    .from("daily_goals")
-    .select("task_id, goal_date, time_logged, is_fully_completed")
-    .eq("user_id", userId)
-    .in("goal_date", pastDates);
+  const [{ data: goalRows }, tasksResult] = await Promise.all([
+    supabase
+      .from("daily_goals")
+      .select("task_id, goal_date, time_logged, is_fully_completed")
+      .eq("user_id", userId)
+      .in("goal_date", pastDates),
+    taskIds.length > 0
+      ? supabase
+          .from("tasks")
+          .select("id, due_date")
+          .eq("user_id", userId)
+          .in("id", taskIds)
+      : Promise.resolve({ data: [] as { id: string; due_date: string | null }[], error: null }),
+  ]);
 
   const completedGoals = buildCompletedGoalKeys(goalRows ?? []);
 
-  let tasksById = new Map<string, { id: string; due_date: string | null }>();
-  if (taskIds.length > 0) {
-    const { data: taskRows } = await supabase
-      .from("tasks")
-      .select("id, due_date")
-      .eq("user_id", userId)
-      .in("id", taskIds);
-    tasksById = new Map((taskRows ?? []).map((t) => [t.id, t]));
-  }
+  const tasksById = new Map<string, { id: string; due_date: string | null }>(
+    (tasksResult.data ?? []).map((t) => [t.id, t]),
+  );
 
   const missedForDrift = filterMissedBlocksForDrift(
     pastBlocks,
@@ -1093,17 +1096,38 @@ export async function generateSchedulePlan(
       ? "Recalculate my schedule from today forward to cover missed study time from previous days."
       : "Generate an optimal schedule based on my existing routine and tasks.");
 
-  // ── Fetch data ────────────────────────────────────────────────────────────
-  const { data: profile, error: profileError } = await supabase
-    .from("profiles")
-    .select(
-      "academic_background, weekly_hours, work_rest_interval, buffer_time_minutes, " +
-      "learning_style, scheduling_style, hobbies_and_breaks"
-    )
-    .eq("id", user.id)
-    .single();
+  // ── Fetch data (profile, tasks, schedules are independent) ───────────────
+  const [
+    { data: profile, error: profileError },
+    { data: tasks, error: tasksError },
+    { data: rawSchedules, error: schedError },
+  ] = await Promise.all([
+    supabase
+      .from("profiles")
+      .select(
+        "academic_background, weekly_hours, work_rest_interval, buffer_time_minutes, " +
+        "learning_style, scheduling_style, hobbies_and_breaks",
+      )
+      .eq("id", user.id)
+      .single(),
+    supabase
+      .from("tasks")
+      .select("id, title, course_name, due_date, estimated_duration, progress")
+      .eq("user_id", user.id)
+      .neq("status", "archived")
+      .lt("progress", 100)
+      .order("due_date", { ascending: true, nullsFirst: false }),
+    supabase
+      .from("schedules")
+      .select("day_of_week, start_time, duration, type, courses(course_name)")
+      .eq("user_id", user.id)
+      .order("day_of_week", { ascending: true }),
+  ]);
+
   if (profileError || !profile)
     return { success: false as const, error: "Could not load profile" };
+  if (tasksError) return { success: false as const, error: tasksError.message };
+  if (schedError) return { success: false as const, error: schedError.message };
 
   const profileRow = profile as unknown as {
     academic_background: string | null;
@@ -1124,22 +1148,6 @@ export async function generateSchedulePlan(
     hobbies_and_breaks:  profileRow.hobbies_and_breaks ?? null,
     academic_background: profileRow.academic_background ?? null,
   };
-
-  const { data: tasks, error: tasksError } = await supabase
-    .from("tasks")
-    .select("id, title, course_name, due_date, estimated_duration, progress")
-    .eq("user_id", user.id)
-    .neq("status", "archived")
-    .lt("progress", 100)
-    .order("due_date", { ascending: true, nullsFirst: false });
-  if (tasksError) return { success: false as const, error: tasksError.message };
-
-  const { data: rawSchedules, error: schedError } = await supabase
-    .from("schedules")
-    .select("day_of_week, start_time, duration, type, courses(course_name)")
-    .eq("user_id", user.id)
-    .order("day_of_week", { ascending: true });
-  if (schedError) return { success: false as const, error: schedError.message };
 
   const fixedSlots: FixedSlot[] = (rawSchedules ?? []).map(s => ({
     day_of_week: s.day_of_week,
@@ -1581,22 +1589,27 @@ export async function approvePlan(startDate?: string, endDate?: string) {
   const rangeFrom = startDate ?? horizon.startDate;
   void (endDate ?? horizon.endDate); // horizon end kept for API compat; deletes are forward-only
 
-  const { data: draftBlocks, error: fetchErr } = await supabase
-    .from("scheduled_blocks")
-    .select("id, task_id, start_time, end_time, scheduled_date, title")
-    .eq("user_id", user.id)
-    .eq("kind", "ai")
-    .eq("is_locked", false);
+  const [
+    { data: draftBlocks, error: fetchErr },
+    { data: currentTasks },
+  ] = await Promise.all([
+    supabase
+      .from("scheduled_blocks")
+      .select("id, task_id, start_time, end_time, scheduled_date, title")
+      .eq("user_id", user.id)
+      .eq("kind", "ai")
+      .eq("is_locked", false),
+    supabase
+      .from("tasks")
+      .select("id, title, progress, status")
+      .eq("user_id", user.id),
+  ]);
+
   if (fetchErr) return { success: false as const, error: fetchErr.message };
   if (!draftBlocks?.length)
     return { success: false as const, error: "No draft blocks to approve." };
 
   // ── Snapshot for undo ──────────────────────────────────────────────────────
-  const { data: currentTasks } = await supabase
-    .from("tasks")
-    .select("id, title, progress, status")
-    .eq("user_id", user.id);
-
   await supabase.from("approval_snapshots").insert({
     user_id: user.id,
     snapshot_data: {
@@ -1670,12 +1683,31 @@ export async function approvePlan(startDate?: string, endDate?: string) {
     }
   }
 
-  for (const { taskId, date, totalMin } of aggMap.values()) {
-    const { data: task } = await supabase
-      .from("tasks")
-      .select("title, estimated_duration")
-      .eq("id", taskId)
-      .single();
+  const aggEntries = [...aggMap.values()];
+  const uniqueTaskIds = [...new Set(aggEntries.map((e) => e.taskId))];
+
+  const { data: taskRows } = uniqueTaskIds.length > 0
+    ? await supabase
+        .from("tasks")
+        .select("id, title, estimated_duration")
+        .eq("user_id", user.id)
+        .in("id", uniqueTaskIds)
+    : { data: [] as { id: string; title: string; estimated_duration: number | null }[] };
+
+  const tasksById = new Map((taskRows ?? []).map((t) => [t.id, t]));
+
+  const goalUpserts: Array<{
+    user_id:            string;
+    task_id:            string;
+    goal_date:          string;
+    target_minutes:     number;
+    title:              string;
+    time_logged:        boolean;
+    is_fully_completed: boolean;
+  }> = [];
+
+  for (const { taskId, date, totalMin } of aggEntries) {
+    const task = tasksById.get(taskId);
     if (!task) continue;
 
     const estimated = task.estimated_duration ?? 60;
@@ -1694,18 +1726,23 @@ export async function approvePlan(startDate?: string, endDate?: string) {
     const roundedPct = Math.max(5, Math.min(100, roundTo5(rawPct)));
     const goalTitle  = `${task.title} — ${roundedPct}%`;
 
-    await supabase.from("daily_goals").upsert(
-      {
-        user_id:            user.id,
-        task_id:            taskId,
-        goal_date:          date,
-        target_minutes:     totalMin,
-        title:              goalTitle,
-        time_logged:        false,
-        is_fully_completed: false,
-      },
-      { onConflict: "user_id,task_id,goal_date" }
-    );
+    goalUpserts.push({
+      user_id:            user.id,
+      task_id:            taskId,
+      goal_date:          date,
+      target_minutes:     totalMin,
+      title:              goalTitle,
+      time_logged:        false,
+      is_fully_completed: false,
+    });
+  }
+
+  if (goalUpserts.length > 0) {
+    const { error: goalsErr } = await supabase
+      .from("daily_goals")
+      .upsert(goalUpserts, { onConflict: "user_id,task_id,goal_date" });
+
+    if (goalsErr) return { success: false as const, error: goalsErr.message };
   }
 
   revalidatePath("/planner");
@@ -1735,12 +1772,21 @@ export async function undoApproval() {
     tasks: Array<{ id: string; progress: number; status: string }>;
   };
 
-  for (const t of snap.tasks ?? []) {
-    await supabase
-      .from("tasks")
-      .update({ progress: t.progress, status: t.status })
-      .eq("id", t.id)
-      .eq("user_id", user.id);
+  const taskRestores = snap.tasks ?? [];
+  if (taskRestores.length > 0) {
+    const { error: restoreErr } = await supabase.from("tasks").upsert(
+      taskRestores.map((t) => ({
+        id:       t.id,
+        user_id:  user.id,
+        progress: t.progress,
+        status:   t.status,
+      })),
+      { onConflict: "id" },
+    );
+
+    if (restoreErr) {
+      return { success: false as const, error: restoreErr.message };
+    }
   }
 
   await supabase.from("approval_snapshots").delete().eq("id", snapshots[0].id);
@@ -1779,7 +1825,7 @@ export async function createManualBlock(data: {
       is_locked:      true,
       kind:           "manual",
     })
-    .select()
+    .select("id")
     .single();
 
   if (error) {
@@ -1865,69 +1911,73 @@ export async function loadPlannerWeekData(
 
   console.log("[loadPlannerWeekData] range:", { weekStart, weekEnd, historyStart });
 
-  const { data: studyBlocks, error: studyError } = await supabase
-    .from("scheduled_blocks")
-    .select("id, kind, title, scheduled_date, start_time, end_time, is_locked, task_id")
-    .eq("user_id", user.id)
-    .gte("scheduled_date", weekStart)
-    .lte("scheduled_date", weekEnd)
-    .order("scheduled_date")
-    .order("start_time");
+  const [
+    { data: studyBlocks, error: studyError },
+    { data: rawSchedules, error: schedError },
+    { data: historyBlocks, error: histError },
+    { data: goals, error: goalsError },
+    { data: progressBlockRows, error: progressError },
+    { data: taskRows, error: tasksError },
+  ] = await Promise.all([
+    supabase
+      .from("scheduled_blocks")
+      .select("id, kind, title, scheduled_date, start_time, end_time, is_locked, task_id")
+      .eq("user_id", user.id)
+      .gte("scheduled_date", weekStart)
+      .lte("scheduled_date", weekEnd)
+      .order("scheduled_date")
+      .order("start_time"),
+    supabase
+      .from("schedules")
+      .select("id, day_of_week, start_time, duration, type, courses(course_name)")
+      .eq("user_id", user.id),
+    supabase
+      .from("scheduled_blocks")
+      .select("id, kind, title, scheduled_date, start_time, end_time, is_locked, task_id")
+      .eq("user_id", user.id)
+      .gte("scheduled_date", historyStart)
+      .lt("scheduled_date", weekStart)
+      .order("scheduled_date")
+      .order("start_time"),
+    supabase
+      .from("daily_goals")
+      .select("id, task_id, goal_date, time_logged, is_fully_completed, baseline_progress_snapshot")
+      .eq("user_id", user.id),
+    supabase
+      .from("scheduled_blocks")
+      .select("id, kind, title, scheduled_date, start_time, end_time, is_locked, task_id")
+      .eq("user_id", user.id)
+      .in("kind", ["ai", "manual"])
+      .not("task_id", "is", null)
+      .order("scheduled_date")
+      .order("start_time"),
+    supabase
+      .from("tasks")
+      .select("id, title, due_date, estimated_duration, course_name, status, progress")
+      .eq("user_id", user.id)
+      .in("status", ["pending", "in_progress", "completed"]),
+  ]);
 
   if (studyError) {
     console.error("[loadPlannerWeekData] study blocks error:", studyError.message);
   }
   console.log("[loadPlannerWeekData] Fetched blocks:", studyBlocks ?? []);
 
-  const { data: rawSchedules, error: schedError } = await supabase
-    .from("schedules")
-    .select("id, day_of_week, start_time, duration, type, courses(course_name)")
-    .eq("user_id", user.id);
-
   if (schedError) {
     console.error("[loadPlannerWeekData] schedules error:", schedError.message);
   }
-
-  const { data: historyBlocks, error: histError } = await supabase
-    .from("scheduled_blocks")
-    .select("id, kind, title, scheduled_date, start_time, end_time, is_locked, task_id")
-    .eq("user_id", user.id)
-    .gte("scheduled_date", historyStart)
-    .lt("scheduled_date", weekStart)
-    .order("scheduled_date")
-    .order("start_time");
 
   if (histError) {
     console.error("[loadPlannerWeekData] history blocks error:", histError.message);
   }
 
-  const { data: goals, error: goalsError } = await supabase
-    .from("daily_goals")
-    .select("id, task_id, goal_date, time_logged, is_fully_completed, baseline_progress_snapshot")
-    .eq("user_id", user.id);
-
   if (goalsError) {
     console.error("[loadPlannerWeekData] daily_goals error:", goalsError.message);
   }
 
-  const { data: progressBlockRows, error: progressError } = await supabase
-    .from("scheduled_blocks")
-    .select("id, kind, title, scheduled_date, start_time, end_time, is_locked, task_id")
-    .eq("user_id", user.id)
-    .in("kind", ["ai", "manual"])
-    .not("task_id", "is", null)
-    .order("scheduled_date")
-    .order("start_time");
-
   if (progressError) {
     console.error("[loadPlannerWeekData] progress blocks error:", progressError.message);
   }
-
-  const { data: taskRows, error: tasksError } = await supabase
-    .from("tasks")
-    .select("id, title, due_date, estimated_duration, course_name, status, progress")
-    .eq("user_id", user.id)
-    .in("status", ["pending", "in_progress", "completed"]);
 
   if (tasksError) {
     console.error("[loadPlannerWeekData] tasks error:", tasksError.message);

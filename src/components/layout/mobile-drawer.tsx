@@ -68,6 +68,7 @@ export function MobileDrawer() {
               <Link
                 key={href}
                 href={href}
+                prefetch
                 data-tour={tourId}
                 onClick={() => setMobileOpen(false)}
                 className={cn(

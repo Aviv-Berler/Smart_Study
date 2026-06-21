@@ -1,6 +1,5 @@
 "use client";
 
-import { useEffect } from "react";
 import { AppHeader } from "@/components/layout/app-header";
 import { DailyTaskBoard } from "@/components/dashboard/daily-task-board";
 import { MilestonesSection } from "@/components/dashboard/milestones-section";
@@ -23,11 +22,7 @@ interface Props {
 
 export function Dashboard({ todaySchedules, driftState }: Props) {
   const { translate, locale } = useLanguage();
-  const { todayTableRows, ensureLoaded } = usePlannerSchedule();
-
-  useEffect(() => {
-    void ensureLoaded();
-  }, [ensureLoaded]);
+  const { todayTableRows } = usePlannerSchedule();
 
   const goals = todayTableRows;
 

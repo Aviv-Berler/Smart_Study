@@ -59,6 +59,7 @@ export function Sidebar() {
             <Link
               key={href}
               href={href}
+              prefetch
               data-tour={tourId}
               title={collapsed ? translate(labelKey) : undefined}
               className={cn(

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useLayoutEffect, useRef } from "react";
 import { usePlannerSchedule } from "@/components/providers/planner-schedule-provider";
 import type { ScheduleGoalRecord } from "@/app/actions/planner";
 import type { CalendarBlock, Task } from "@/types/database";
@@ -43,7 +43,7 @@ export function ScheduleHydrator({
   const { applyWeekData, syncGoalMetadata } = usePlannerSchedule();
   const lastFingerprint = useRef<string | null>(null);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const fingerprint = goalFingerprint(
       completedGoalKeys,
       sessionLoggedKeys,

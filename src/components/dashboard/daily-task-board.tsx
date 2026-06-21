@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useOptimistic, useTransition } from "react";
 import { CheckCircle2, Circle, Clock, Target, Sparkles } from "lucide-react";
 import { completeDailyGoal, logTimeSession } from "@/app/actions/daily-goals";
@@ -32,13 +33,12 @@ function TaskRow({
   const { translate } = useLanguage();
 
   const targetPct = goal.cumulativeTargetPct;
-  const doneToday = goal.timeLogged || goal.isFullyCompleted;
 
   return (
     <div
       className={cn(
         "flex items-center gap-3 px-3 py-2.5 transition-colors",
-        doneToday && "bg-muted/25"
+        goal.timeLogged && "bg-muted/25",
       )}
     >
       <button
@@ -52,7 +52,7 @@ function TaskRow({
           "transition-all duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
           goal.timeLogged
             ? "border-emerald-500 bg-emerald-500 text-white shadow-sm shadow-emerald-200 dark:shadow-emerald-900/40"
-            : "border-border bg-muted/60 text-muted-foreground hover:border-emerald-400 hover:bg-emerald-50 hover:text-emerald-700 dark:hover:bg-emerald-950 dark:hover:text-emerald-300"
+            : "border-border bg-muted/60 text-muted-foreground hover:border-emerald-400 hover:bg-emerald-50 hover:text-emerald-700 dark:hover:bg-emerald-950 dark:hover:text-emerald-300",
         )}
       >
         <Clock className="h-3 w-3" />
@@ -63,9 +63,9 @@ function TaskRow({
         <span
           className={cn(
             "flex flex-row flex-wrap items-center gap-x-1.5 gap-y-0.5 text-sm font-medium leading-snug transition-colors",
-            doneToday
+            goal.isFullyCompleted
               ? "text-muted-foreground/60 line-through decoration-muted-foreground/40"
-              : "text-foreground"
+              : "text-foreground",
           )}
         >
           <span className="shrink-0 text-xs font-semibold text-primary">
@@ -92,7 +92,7 @@ function TaskRow({
           "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
           goal.isFullyCompleted
             ? "text-primary"
-            : "text-muted-foreground/40 hover:text-primary/70"
+            : "text-muted-foreground/40 hover:text-primary/70",
         )}
       >
         {goal.isFullyCompleted ? (
@@ -115,53 +115,95 @@ export function DailyTaskBoard({ goals }: DailyTaskBoardProps) {
     goals,
     (
       state: DailyGoalTableRow[],
-      update: { goalId: string; patch: Partial<DailyGoalTableRow> }
+      update: { goalId: string; patch: Partial<DailyGoalTableRow> },
     ) =>
-      state.map(g =>
-        (g.goalId === update.goalId || g.taskId === update.goalId)
+      state.map((g) =>
+        g.goalId === update.goalId || g.taskId === update.goalId
           ? { ...g, ...update.patch }
-          : g
-      )
+          : g,
+      ),
   );
 
   const toggleTime = (goal: DailyGoalTableRow) => {
     const next = !goal.timeLogged;
-    startTransition(async () => {
-      updateOptimistic({ goalId: goal.goalId ?? goal.taskId, patch: { timeLogged: next } });
-      patchGoalRecord(goal.taskId, { timeLogged: next }, todayStr);
-      const result = await logTimeSession(goal.taskId, next, todayStr, goal.targetMinutes);
-      if (!result.error) await refreshSchedule();
+    const goalKey = goal.goalId ?? goal.taskId;
+
+    patchGoalRecord(goal.taskId, { timeLogged: next }, todayStr);
+
+    startTransition(() => {
+      updateOptimistic({ goalId: goalKey, patch: { timeLogged: next } });
+
+      void (async () => {
+        const result = await logTimeSession(
+          goal.taskId,
+          next,
+          todayStr,
+          goal.targetMinutes,
+        );
+
+        if (result.error) {
+          patchGoalRecord(goal.taskId, { timeLogged: !next }, todayStr);
+          startTransition(() => {
+            updateOptimistic({ goalId: goalKey, patch: { timeLogged: !next } });
+          });
+          return;
+        }
+
+        void refreshSchedule();
+      })();
     });
   };
 
   const toggleComplete = (goal: DailyGoalTableRow) => {
     if (!goal.goalId) return;
     const next = !goal.isFullyCompleted;
-    startTransition(async () => {
+
+    patchGoalRecord(goal.taskId, { isFullyCompleted: next }, todayStr);
+
+    startTransition(() => {
       updateOptimistic({
         goalId: goal.goalId!,
         patch: {
           isFullyCompleted: next,
-          registryProgressPct: next ? goal.cumulativeTargetPct : goal.registryProgressPct,
+          registryProgressPct: next
+            ? goal.cumulativeTargetPct
+            : goal.registryProgressPct,
         },
       });
-      patchGoalRecord(goal.taskId, { isFullyCompleted: next }, todayStr);
-      const result = await completeDailyGoal(
-        goal.goalId!,
-        next,
-        next
-          ? {
-              baselineProgressPct: goal.registryProgressPct,
-              targetProgressPct:   goal.cumulativeTargetPct,
-            }
-          : undefined,
-      );
-      if (!result.error) await refreshSchedule();
+
+      void (async () => {
+        const result = await completeDailyGoal(
+          goal.goalId!,
+          next,
+          next
+            ? {
+                baselineProgressPct: goal.registryProgressPct,
+                targetProgressPct: goal.cumulativeTargetPct,
+              }
+            : undefined,
+        );
+
+        if (result.error) {
+          patchGoalRecord(goal.taskId, { isFullyCompleted: !next }, todayStr);
+          startTransition(() => {
+            updateOptimistic({
+              goalId: goal.goalId!,
+              patch: {
+                isFullyCompleted: !next,
+                registryProgressPct: goal.registryProgressPct,
+              },
+            });
+          });
+          return;
+        }
+
+        void refreshSchedule();
+      })();
     });
   };
 
-  const fullyDoneCount  = optimisticGoals.filter(g => g.isFullyCompleted).length;
-  const timeLoggedCount = optimisticGoals.filter(g => g.timeLogged).length;
+  const fullyDoneCount = optimisticGoals.filter((g) => g.isFullyCompleted).length;
+  const timeLoggedCount = optimisticGoals.filter((g) => g.timeLogged).length;
 
   return (
     <section className="space-y-3" data-tour="daily-task-board">
@@ -193,15 +235,15 @@ export function DailyTaskBoard({ goals }: DailyTaskBoardProps) {
             </p>
             <p className="text-xs text-muted-foreground/70">
               {translate("plannerLinkHint")}{" "}
-              <a href="/planner" className="font-semibold text-primary hover:underline">
+              <Link href="/planner" prefetch className="font-semibold text-primary hover:underline">
                 {translate("smartPlannerLink")}
-              </a>{" "}
+              </Link>{" "}
               {translate("plannerLinkSuffix")}
             </p>
           </CardContent>
         ) : (
           <CardContent className="divide-y divide-border p-1">
-            {optimisticGoals.map(goal => (
+            {optimisticGoals.map((goal) => (
               <TaskRow
                 key={goal.goalId ?? goal.taskId}
                 goal={goal}

@@ -11,7 +11,11 @@ export async function getTodayGoals(goalDate: string = todayDateString()) {
 
   const { data } = await supabase
     .from("daily_goals")
-    .select("*, tasks(id, title, course_name, estimated_duration, status)")
+    .select(
+      "id, user_id, task_id, title, goal_date, target_minutes, time_logged, " +
+      "is_fully_completed, baseline_progress_snapshot, created_at, updated_at, " +
+      "tasks(id, title, course_name, estimated_duration, status)",
+    )
     .eq("user_id", user.id)
     .eq("goal_date", goalDate)
     .order("created_at", { ascending: true });

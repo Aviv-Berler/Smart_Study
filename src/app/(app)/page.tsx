@@ -1,12 +1,14 @@
+import { Suspense } from "react";
 import { getTasks } from "@/app/actions/tasks";
 import { getSchedulesForToday } from "@/app/actions/courses";
 import { loadPlannerWeekData, getTodayStudyBlocks, getDriftState } from "@/app/actions/planner";
 import { Dashboard } from "@/components/dashboard/dashboard";
+import { DashboardPageSkeleton } from "@/components/dashboard/dashboard-skeleton";
 import { ScheduleHydrator } from "@/components/providers/schedule-hydrator";
 import { getWeekBounds } from "@/lib/plan-horizon";
 import { todayDateString } from "@/lib/drift-detection";
 
-export default async function HomePage() {
+async function DashboardPageContent() {
   const todayStr = todayDateString();
   const { weekStart, weekEnd } = getWeekBounds(todayStr);
 
@@ -41,5 +43,13 @@ export default async function HomePage() {
         driftState={driftState}
       />
     </ScheduleHydrator>
+  );
+}
+
+export default function HomePage() {
+  return (
+    <Suspense fallback={<DashboardPageSkeleton />}>
+      <DashboardPageContent />
+    </Suspense>
   );
 }
