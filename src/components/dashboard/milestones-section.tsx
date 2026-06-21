@@ -2,6 +2,7 @@
 
 import { Flag } from "lucide-react";
 import { useLanguage } from "@/components/providers/language-provider";
+import { usePlannerSchedule } from "@/components/providers/planner-schedule-provider";
 import {
   AutoDirText,
   LtrIsolate,
@@ -10,26 +11,17 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
+import type { UpcomingMilestoneItem } from "@/lib/planner-goals";
 
-interface MilestoneItem {
-  id: string;
-  title: string;
-  courseName: string;
-  dueInDays: number;
-  progressPercent: number;
-}
-
-interface Props {
-  milestones: MilestoneItem[];
-}
-
-function MilestoneCard({ milestone }: { milestone: MilestoneItem }) {
+function MilestoneCard({ milestone }: { milestone: UpcomingMilestoneItem }) {
   const { translate } = useLanguage();
-  const urgentCount = milestone.dueInDays;
-  const urgentText =
-    urgentCount === 0
+  const isOverdue = milestone.dueInDays < 0;
+  const urgentCount = Math.abs(milestone.dueInDays);
+  const urgentText = isOverdue
+    ? translate("overdue")
+    : milestone.dueInDays === 0
       ? "Today!"
-      : urgentCount === 1
+      : milestone.dueInDays === 1
         ? translate("dayLeft")
         : translate("daysLeft");
 
@@ -49,18 +41,23 @@ function MilestoneCard({ milestone }: { milestone: MilestoneItem }) {
           </div>
           <Badge
             className={`shrink-0 flex flex-row items-center gap-1 ${
-              milestone.dueInDays <= 3
+              isOverdue || milestone.dueInDays <= 3
                 ? "bg-destructive/10 text-destructive hover:bg-destructive/10"
                 : "bg-primary/10 text-primary hover:bg-primary/10"
             }`}
           >
-            {urgentCount > 1 ? (
+            {isOverdue ? (
+              <>
+                <LtrIsolate>{urgentCount}</LtrIsolate>
+                <span>{urgentText}</span>
+              </>
+            ) : urgentCount > 1 ? (
               <>
                 <LtrIsolate>{urgentCount}</LtrIsolate>
                 <span>{urgentText}</span>
               </>
             ) : (
-              <span>{urgentCount === 0 ? urgentText : `1 ${urgentText}`}</span>
+              <span>{milestone.dueInDays === 0 ? urgentText : `1 ${urgentText}`}</span>
             )}
           </Badge>
         </div>
@@ -79,10 +76,11 @@ function MilestoneCard({ milestone }: { milestone: MilestoneItem }) {
   );
 }
 
-export function MilestonesSection({ milestones }: Props) {
+export function MilestonesSection() {
   const { translate } = useLanguage();
+  const { upcomingMilestones } = usePlannerSchedule();
 
-  if (milestones.length === 0) return null;
+  if (upcomingMilestones.length === 0) return null;
 
   return (
     <section className="space-y-3">
@@ -93,7 +91,7 @@ export function MilestonesSection({ milestones }: Props) {
         </h2>
       </div>
       <div className="flex gap-3 overflow-x-auto pb-1">
-        {milestones.map((m) => (
+        {upcomingMilestones.map((m) => (
           <MilestoneCard key={m.id} milestone={m} />
         ))}
       </div>

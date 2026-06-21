@@ -1,11 +1,14 @@
+import { differenceInCalendarDays } from "date-fns";
 import { goalCompletionKey, isMissedBlock } from "@/lib/drift-detection";
-import { normalizeTimeKey, toDateKey } from "@/lib/plan-horizon";
+import { normalizeDueDateKey, normalizeTimeKey, parseLocalDate, toDateKey } from "@/lib/plan-horizon";
 import type { CalendarBlock, DailyGoalTableRow, Task } from "@/types/database";
 
 /** Live-computed daily target entry (shared Planner + Dashboard) */
 export interface LiveDailyGoalEntry {
   taskId:           string;
   taskTitle:        string;
+  /** Calendar day this session belongs to (YYYY-MM-DD) */
+  goalDate:         string;
   /** Minutes scheduled on this calendar day (display only) */
   scheduledMinutes: number;
   /** Absolute cumulative target % through end of this day (base + pending blocks) */
@@ -15,6 +18,16 @@ export interface LiveDailyGoalEntry {
   isSessionDone:    boolean;
 }
 
+/** Parent-task deadline for the dashboard milestones row (macro view) */
+export interface UpcomingMilestoneItem {
+  id:              string;
+  title:           string;
+  courseName:      string | null;
+  dueDate:         string;
+  dueInDays:       number;
+  progressPercent: number;
+}
+
 /** Prefix-sum index of block minutes per task (chronological) */
 export interface CumulativeBlockIndex {
   byTask:      Map<string, { date: string; dayMinutes: number; prefixMinutes: number }[]>;
@@ -22,9 +35,10 @@ export interface CumulativeBlockIndex {
 }
 
 export interface GoalRecord {
-  goalId:           string | null;
-  timeLogged:       boolean;
-  isFullyCompleted: boolean;
+  goalId:                    string | null;
+  timeLogged:                boolean;
+  isFullyCompleted:          boolean;
+  baselineProgressSnapshot:  number | null;
 }
 
 export function normalizeTaskId(taskId: string | null | undefined): string | null {
@@ -57,11 +71,12 @@ export function buildTimelineBlocks(
   ) => boolean,
 ): CalendarBlock[] {
   if (!hasDrafts) return blocks;
-  return blocks.filter(
-    (b) =>
-      !(b.is_locked && b.kind === "ai") ||
-      isMissedBlock(b, todayStr, completedGoals),
-  );
+  return blocks.filter((b) => {
+    if (b.kind === "fixed") return true;
+    if (!b.is_locked) return true;
+    if (toDateKey(b.scheduled_date) >= todayStr) return true;
+    return isMissedBlock(b, todayStr, completedGoals);
+  });
 }
 
 /**
@@ -107,36 +122,56 @@ export function buildCumulativeBlockIndex(allBlocks: CalendarBlock[]): Cumulativ
   return { byTask, titleByTask };
 }
 
-/** Prefix sums of only logged/completed session blocks (excludes missed/red blocks). */
+/** Prefix sums of session-logged blocks only (excludes missed/red blocks). */
 export function buildLoggedCumulativeIndex(
   allBlocks: CalendarBlock[],
-  completedGoals: Set<string>,
+  sessionLoggedKeys: Set<string>,
   today: string,
+  missedClearedKeys: Set<string>,
 ): CumulativeBlockIndex {
   const logged = allBlocks.filter((b) => {
     if (b.kind !== "ai" && b.kind !== "manual") return false;
     const taskId = normalizeTaskId(b.task_id);
     if (!taskId) return false;
-    if (isMissedBlock(b, today, completedGoals)) return false;
-    return completedGoals.has(goalCompletionKey(taskId, toDateKey(b.scheduled_date)));
+    if (isMissedBlock(b, today, missedClearedKeys)) return false;
+    return sessionLoggedKeys.has(goalCompletionKey(taskId, toDateKey(b.scheduled_date)));
   });
   return buildCumulativeBlockIndex(logged);
 }
 
-/** Prefix sums of scheduled blocks not yet logged — excludes missed/red blocks. */
-export function buildUncompletedCumulativeIndex(
+function filterEligibleStudyBlocks(
   allBlocks: CalendarBlock[],
-  completedGoals: Set<string>,
   today: string,
-): CumulativeBlockIndex {
-  const pending = allBlocks.filter((b) => {
+  missedClearedKeys: Set<string>,
+): CalendarBlock[] {
+  return allBlocks.filter((b) => {
     if (b.kind !== "ai" && b.kind !== "manual") return false;
-    const taskId = normalizeTaskId(b.task_id);
-    if (!taskId) return false;
-    if (isMissedBlock(b, today, completedGoals)) return false;
-    return !completedGoals.has(goalCompletionKey(taskId, toDateKey(b.scheduled_date)));
+    if (!normalizeTaskId(b.task_id)) return false;
+    if (isMissedBlock(b, today, missedClearedKeys)) return false;
+    return true;
   });
-  return buildCumulativeBlockIndex(pending);
+}
+
+/** Planned target: registry base + all scheduled block minutes through cutoff (stable when session logged). */
+export function getScheduledTargetAtDate(
+  scheduleIndex: CumulativeBlockIndex,
+  taskId: string,
+  cutoffDate: string,
+  task: Task | undefined,
+): {
+  targetPct:            number;
+  baseProgress:         number;
+  scheduledAdditionPct: number;
+} {
+  const required = taskEstimatedMinutes(task);
+  const base     = getBaseProgressPct(task);
+  const addition = getCumulativeAtDate(scheduleIndex, taskId, cutoffDate, required);
+
+  return {
+    targetPct:            Math.min(100, base + addition.cumulativePct),
+    baseProgress:         base,
+    scheduledAdditionPct: addition.cumulativePct,
+  };
 }
 
 /** Registry baseline — same field the AI scheduler uses for remaining-work quotas */
@@ -180,11 +215,11 @@ export function getCumulativeAtDate(
 }
 
 /**
- * Daily target projection: BaseProgress + uncompleted scheduled blocks through cutoff.
- * FinalDailyTarget = min(100, base + Σ pending block minutes ≤ cutoff / estimate)
+ * Daily target projection (legacy helper — uses full schedule index, not session-filtered).
+ * @deprecated Prefer getScheduledTargetAtDate directly.
  */
 export function getProjectedDailyTargetAtDate(
-  uncompletedIndex: CumulativeBlockIndex,
+  scheduleIndex: CumulativeBlockIndex,
   taskId: string,
   cutoffDate: string,
   task: Task | undefined,
@@ -196,7 +231,7 @@ export function getProjectedDailyTargetAtDate(
 } {
   const required = taskEstimatedMinutes(task);
   const base     = getBaseProgressPct(task);
-  const addition = getCumulativeAtDate(uncompletedIndex, taskId, cutoffDate, required);
+  const addition = getCumulativeAtDate(scheduleIndex, taskId, cutoffDate, required);
 
   return {
     targetPct:                Math.min(100, base + addition.cumulativePct),
@@ -246,11 +281,19 @@ export function computeLiveDailyGoals(
   timelineBlocks: CalendarBlock[],
   progressBlocks: CalendarBlock[],
   tasksById: Map<string, Task>,
-  completedGoals: Set<string>,
+  sessionLoggedKeys: Set<string>,
+  fullyCompletedKeys: Set<string>,
+  missedClearedKeys: Set<string>,
   todayKey: string,
 ): LiveDailyGoalEntry[][] {
-  const uncompletedIndex = buildUncompletedCumulativeIndex(progressBlocks, completedGoals, todayKey);
-  const loggedIndex      = buildLoggedCumulativeIndex(progressBlocks, completedGoals, todayKey);
+  const eligibleBlocks = filterEligibleStudyBlocks(progressBlocks, todayKey, missedClearedKeys);
+  const scheduleIndex  = buildCumulativeBlockIndex(eligibleBlocks);
+  const loggedIndex    = buildLoggedCumulativeIndex(
+    progressBlocks,
+    sessionLoggedKeys,
+    todayKey,
+    missedClearedKeys,
+  );
 
   return dayKeys.map((dayStr) => {
     const scheduledByTask = new Map<string, number>();
@@ -273,13 +316,13 @@ export function computeLiveDailyGoals(
     }
 
     if (process.env.NODE_ENV === "development" && dayStr === todayKey) {
-      console.group(`[GoalsSync] ${dayStr} (base + pending blocks)`);
+      console.group(`[GoalsSync] ${dayStr} (base + scheduled blocks)`);
       console.log("a) Today scheduled taskIds:", [...scheduledByTask.keys()]);
       for (const [taskId] of scheduledByTask) {
         const task = tasksById.get(taskId);
-        const proj = getProjectedDailyTargetAtDate(uncompletedIndex, taskId, dayStr, task);
+        const proj = getScheduledTargetAtDate(scheduleIndex, taskId, dayStr, task);
         console.log(
-          `b) task=${taskId} base=${proj.baseProgress}% +pending=${proj.projectedAdditionPct}% → target=${proj.targetPct}%`,
+          `b) task=${taskId} base=${proj.baseProgress}% +scheduled=${proj.scheduledAdditionPct}% → target=${proj.targetPct}%`,
         );
       }
       console.groupEnd();
@@ -289,24 +332,79 @@ export function computeLiveDailyGoals(
     for (const [taskId, dayMinutes] of scheduledByTask) {
       if (dayMinutes <= 0) continue;
 
+      const recordKey     = goalCompletionKey(taskId, dayStr);
+      const isSessionDone = sessionLoggedKeys.has(recordKey);
+      const isFullyDone   = fullyCompletedKeys.has(recordKey);
+
       const task          = tasksById.get(taskId);
-      const taskTitle     = task?.title ?? titleByTask.get(taskId) ?? uncompletedIndex.titleByTask.get(taskId) ?? "Task";
-      const projected     = getProjectedDailyTargetAtDate(uncompletedIndex, taskId, dayStr, task);
-      const finishedPct   = getActualProgressAtDate(loggedIndex, taskId, dayStr, task);
-      const isSessionDone = completedGoals.has(goalCompletionKey(taskId, dayStr));
+      const taskTitle     = task?.title ?? titleByTask.get(taskId) ?? scheduleIndex.titleByTask.get(taskId) ?? "Task";
+
+      let plannedPct: number;
+      let finishedPct: number;
+
+      if (isFullyDone) {
+        plannedPct  = getBaseProgressPct(task);
+        finishedPct = getBaseProgressPct(task);
+      } else {
+        const scheduled = getScheduledTargetAtDate(scheduleIndex, taskId, dayStr, task);
+        plannedPct      = scheduled.targetPct;
+        finishedPct     = getActualProgressAtDate(loggedIndex, taskId, dayStr, task);
+      }
 
       entries.push({
         taskId,
         taskTitle,
+        goalDate:         dayStr,
         scheduledMinutes: dayMinutes,
-        plannedPct:       projected.targetPct,
+        plannedPct,
         finishedPct,
         isSessionDone,
       });
     }
 
-    return entries.sort((a, b) => b.plannedPct - a.plannedPct);
+    return entries.sort((a, b) => a.goalDate.localeCompare(b.goalDate) || a.taskTitle.localeCompare(b.taskTitle));
   });
+}
+
+/**
+ * Upcoming parent-task deadlines sorted by due_date (macro milestones row).
+ * Overdue active tasks appear first. Excludes 100%-complete / completed-status tasks.
+ */
+export function computeUpcomingMilestones(
+  tasks: Task[],
+  todayKey: string,
+  horizonDays = 14,
+  limit = 4,
+): UpcomingMilestoneItem[] {
+  const today = parseLocalDate(todayKey);
+
+  return tasks
+    .filter((t) => {
+      if (!t.due_date) return false;
+      if (t.status === "completed") return false;
+      if ((t.progress ?? 0) >= 100) return false;
+      return normalizeDueDateKey(t.due_date) != null;
+    })
+    .map((t) => {
+      const dueKey    = normalizeDueDateKey(t.due_date!)!;
+      const dueInDays = differenceInCalendarDays(parseLocalDate(dueKey), today);
+      return { task: t, dueKey, dueInDays };
+    })
+    .filter(({ dueInDays }) => dueInDays <= horizonDays)
+    .sort(
+      (a, b) =>
+        a.dueKey.localeCompare(b.dueKey) ||
+        a.task.title.localeCompare(b.task.title),
+    )
+    .slice(0, limit)
+    .map(({ task, dueInDays }) => ({
+      id:              task.id,
+      title:           task.title,
+      courseName:      task.course_name ?? null,
+      dueDate:         normalizeDueDateKey(task.due_date!)!,
+      dueInDays,
+      progressPercent: Math.min(100, Math.max(0, Math.round(task.progress ?? 0))),
+    }));
 }
 
 /** Map live entries → dashboard table rows */
@@ -314,10 +412,11 @@ export function liveGoalEntriesToTableRows(
   entries: LiveDailyGoalEntry[],
   tasksById: Map<string, Task>,
   goalRecords: Map<string, GoalRecord>,
+  dayKey: string,
 ): DailyGoalTableRow[] {
   return entries.map((e) => {
     const task = tasksById.get(e.taskId);
-    const rec  = goalRecords.get(e.taskId);
+    const rec  = goalRecords.get(goalCompletionKey(e.taskId, dayKey));
     return {
       taskId:              e.taskId,
       goalId:              rec?.goalId ?? null,
@@ -325,7 +424,8 @@ export function liveGoalEntriesToTableRows(
       courseName:          task?.course_name ?? null,
       targetMinutes:       e.scheduledMinutes,
       cumulativeTargetPct: e.plannedPct,
-      timeLogged:          rec?.timeLogged ?? e.isSessionDone,
+      registryProgressPct: Math.min(100, Math.max(0, Math.round(task?.progress ?? 0))),
+      timeLogged:          rec?.timeLogged ?? false,
       isFullyCompleted:    rec?.isFullyCompleted ?? false,
       goalTitle:           `${e.taskTitle} — ${e.plannedPct}%`,
     };

@@ -5,6 +5,7 @@ import { CheckCircle2, Circle, Clock, Target, Sparkles } from "lucide-react";
 import { completeDailyGoal, logTimeSession } from "@/app/actions/daily-goals";
 import { usePlannerSchedule } from "@/components/providers/planner-schedule-provider";
 import { useLanguage } from "@/components/providers/language-provider";
+import { todayDateString } from "@/lib/drift-detection";
 import {
   AutoDirText,
   FractionCounter,
@@ -31,12 +32,13 @@ function TaskRow({
   const { translate } = useLanguage();
 
   const targetPct = goal.cumulativeTargetPct;
+  const doneToday = goal.timeLogged || goal.isFullyCompleted;
 
   return (
     <div
       className={cn(
         "flex items-center gap-3 px-3 py-2.5 transition-colors",
-        goal.isFullyCompleted && "bg-muted/25"
+        doneToday && "bg-muted/25"
       )}
     >
       <button
@@ -61,7 +63,7 @@ function TaskRow({
         <span
           className={cn(
             "flex flex-row flex-wrap items-center gap-x-1.5 gap-y-0.5 text-sm font-medium leading-snug transition-colors",
-            goal.isFullyCompleted
+            doneToday
               ? "text-muted-foreground/60 line-through decoration-muted-foreground/40"
               : "text-foreground"
           )}
@@ -105,8 +107,9 @@ function TaskRow({
 
 export function DailyTaskBoard({ goals }: DailyTaskBoardProps) {
   const { translate } = useLanguage();
-  const { patchGoalRecord } = usePlannerSchedule();
+  const { patchGoalRecord, refreshSchedule } = usePlannerSchedule();
   const [, startTransition] = useTransition();
+  const todayStr = todayDateString();
 
   const [optimisticGoals, updateOptimistic] = useOptimistic(
     goals,
@@ -125,8 +128,9 @@ export function DailyTaskBoard({ goals }: DailyTaskBoardProps) {
     const next = !goal.timeLogged;
     startTransition(async () => {
       updateOptimistic({ goalId: goal.goalId ?? goal.taskId, patch: { timeLogged: next } });
-      patchGoalRecord(goal.taskId, { timeLogged: next });
-      await logTimeSession(goal.taskId, next);
+      patchGoalRecord(goal.taskId, { timeLogged: next }, todayStr);
+      const result = await logTimeSession(goal.taskId, next, todayStr, goal.targetMinutes);
+      if (!result.error) await refreshSchedule();
     });
   };
 
@@ -134,9 +138,25 @@ export function DailyTaskBoard({ goals }: DailyTaskBoardProps) {
     if (!goal.goalId) return;
     const next = !goal.isFullyCompleted;
     startTransition(async () => {
-      updateOptimistic({ goalId: goal.goalId!, patch: { isFullyCompleted: next } });
-      patchGoalRecord(goal.taskId, { isFullyCompleted: next });
-      await completeDailyGoal(goal.goalId!, next);
+      updateOptimistic({
+        goalId: goal.goalId!,
+        patch: {
+          isFullyCompleted: next,
+          registryProgressPct: next ? goal.cumulativeTargetPct : goal.registryProgressPct,
+        },
+      });
+      patchGoalRecord(goal.taskId, { isFullyCompleted: next }, todayStr);
+      const result = await completeDailyGoal(
+        goal.goalId!,
+        next,
+        next
+          ? {
+              baselineProgressPct: goal.registryProgressPct,
+              targetProgressPct:   goal.cumulativeTargetPct,
+            }
+          : undefined,
+      );
+      if (!result.error) await refreshSchedule();
     });
   };
 

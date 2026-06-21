@@ -4,6 +4,7 @@ import {
   createContext,
   useCallback,
   useContext,
+  useEffect,
   useMemo,
   useRef,
   useState,
@@ -14,10 +15,12 @@ import { getWeekBounds } from "@/lib/plan-horizon";
 import {
   buildTimelineBlocks,
   computeLiveDailyGoals,
+  computeUpcomingMilestones,
   liveGoalEntriesToTableRows,
   mergeWeekProgressBlocks,
   normalizeCalendarBlock,
   type GoalRecord,
+  type UpcomingMilestoneItem,
 } from "@/lib/planner-goals";
 import type { CalendarBlock, DailyGoalTableRow, Task } from "@/types/database";
 
@@ -26,15 +29,27 @@ export type { ScheduleGoalRecord };
 interface PlannerScheduleContextValue {
   loaded: boolean;
   todayTableRows: DailyGoalTableRow[];
-  /** Full lifecycle blocks — required for absolute cumulative target math */
+  upcomingMilestones: UpcomingMilestoneItem[];
+  goalRecords: Map<string, GoalRecord>;
+  sessionLoggedKeys: string[];
+  fullyCompletedGoalKeys: string[];
+  completedGoalKeys: string[];
   progressBlocks: CalendarBlock[];
   applyWeekData: (data: {
-    blocks:            CalendarBlock[];
-    progressBlocks:    CalendarBlock[];
-    tasks:             Task[];
-    completedGoalKeys: string[];
-    hasDraftBlocks:    boolean;
-    goalRecords:       ScheduleGoalRecord[];
+    blocks:                   CalendarBlock[];
+    progressBlocks:           CalendarBlock[];
+    tasks:                    Task[];
+    completedGoalKeys:        string[];
+    sessionLoggedKeys:        string[];
+    fullyCompletedGoalKeys:   string[];
+    hasDraftBlocks:           boolean;
+    goalRecords:              ScheduleGoalRecord[];
+  }) => void;
+  syncGoalMetadata: (data: {
+    completedGoalKeys:      string[];
+    sessionLoggedKeys:      string[];
+    fullyCompletedGoalKeys: string[];
+    goalRecords:            ScheduleGoalRecord[];
   }) => void;
   syncBlocks: (
     blocks:            CalendarBlock[],
@@ -43,42 +58,77 @@ interface PlannerScheduleContextValue {
     weekStart:         string,
     weekEnd:           string,
   ) => void;
-  patchGoalRecord: (taskId: string, patch: Partial<GoalRecord>) => void;
+  patchGoalRecord: (taskId: string, patch: Partial<GoalRecord>, goalDate?: string) => void;
   ensureLoaded: () => Promise<void>;
+  refreshSchedule: () => Promise<void>;
 }
 
 const PlannerScheduleContext = createContext<PlannerScheduleContextValue | null>(null);
 
 function goalRecordsToMap(records: ScheduleGoalRecord[]): Map<string, GoalRecord> {
-  return new Map(records.map((r) => [r.taskId, r]));
+  return new Map(
+    records.map((r) => [
+      goalCompletionKey(r.taskId, r.goalDate),
+      {
+        goalId:                   r.goalId,
+        timeLogged:               r.timeLogged,
+        isFullyCompleted:         r.isFullyCompleted,
+        baselineProgressSnapshot: r.baselineProgressSnapshot,
+      },
+    ]),
+  );
+}
+
+function unionKeys(session: string[], fully: string[]): string[] {
+  return [...new Set([...session, ...fully])];
 }
 
 export function PlannerScheduleProvider({ children }: { children: React.ReactNode }) {
-  const [blocks, setBlocks]                       = useState<CalendarBlock[]>([]);
-  const [progressBlocks, setProgressBlocks]       = useState<CalendarBlock[]>([]);
-  const [tasks, setTasks]                         = useState<Task[]>([]);
-  const [completedGoalKeys, setCompletedGoalKeys]   = useState<string[]>([]);
-  const [hasDraftBlocks, setHasDraftBlocks]       = useState(false);
-  const [goalRecords, setGoalRecords]             = useState<Map<string, GoalRecord>>(new Map());
-  const [loaded, setLoaded]                       = useState(false);
+  const [blocks, setBlocks]                         = useState<CalendarBlock[]>([]);
+  const [progressBlocks, setProgressBlocks]         = useState<CalendarBlock[]>([]);
+  const [tasks, setTasks]                           = useState<Task[]>([]);
+  const [completedGoalKeys, setCompletedGoalKeys]     = useState<string[]>([]);
+  const [sessionLoggedKeys, setSessionLoggedKeys]     = useState<string[]>([]);
+  const [fullyCompletedGoalKeys, setFullyCompletedGoalKeys] = useState<string[]>([]);
+  const [hasDraftBlocks, setHasDraftBlocks]         = useState(false);
+  const [goalRecords, setGoalRecords]               = useState<Map<string, GoalRecord>>(new Map());
+  const [loaded, setLoaded]                         = useState(false);
+  const [todayKey, setTodayKey]                     = useState(() => todayDateString());
 
   const loadingRef = useRef(false);
+  const todayKeyRef = useRef(todayKey);
 
   const applyWeekData = useCallback((data: {
-    blocks:            CalendarBlock[];
-    progressBlocks:    CalendarBlock[];
-    tasks:             Task[];
-    completedGoalKeys: string[];
-    hasDraftBlocks:    boolean;
-    goalRecords:       ScheduleGoalRecord[];
+    blocks:                 CalendarBlock[];
+    progressBlocks:         CalendarBlock[];
+    tasks:                  Task[];
+    completedGoalKeys:      string[];
+    sessionLoggedKeys:      string[];
+    fullyCompletedGoalKeys: string[];
+    hasDraftBlocks:         boolean;
+    goalRecords:            ScheduleGoalRecord[];
   }) => {
     setBlocks(data.blocks.map(normalizeCalendarBlock));
     setProgressBlocks(data.progressBlocks.map(normalizeCalendarBlock));
     setTasks(data.tasks);
+    setSessionLoggedKeys(data.sessionLoggedKeys);
+    setFullyCompletedGoalKeys(data.fullyCompletedGoalKeys);
     setCompletedGoalKeys(data.completedGoalKeys);
     setHasDraftBlocks(data.hasDraftBlocks);
     setGoalRecords(goalRecordsToMap(data.goalRecords));
     setLoaded(true);
+  }, []);
+
+  const syncGoalMetadata = useCallback((data: {
+    completedGoalKeys:      string[];
+    sessionLoggedKeys:      string[];
+    fullyCompletedGoalKeys: string[];
+    goalRecords:            ScheduleGoalRecord[];
+  }) => {
+    setSessionLoggedKeys(data.sessionLoggedKeys);
+    setFullyCompletedGoalKeys(data.fullyCompletedGoalKeys);
+    setCompletedGoalKeys(data.completedGoalKeys);
+    setGoalRecords(goalRecordsToMap(data.goalRecords));
   }, []);
 
   const syncBlocks = useCallback((
@@ -97,28 +147,71 @@ export function PlannerScheduleProvider({ children }: { children: React.ReactNod
     setLoaded(true);
   }, []);
 
-  const patchGoalRecord = useCallback((taskId: string, patch: Partial<GoalRecord>) => {
+  const refreshSchedule = useCallback(async () => {
+    if (loadingRef.current) return;
+    loadingRef.current = true;
+    try {
+      const { weekStart, weekEnd } = getWeekBounds(todayKeyRef.current);
+      const data = await loadPlannerWeekData(weekStart, weekEnd);
+      applyWeekData({
+        blocks:                 data.calendarBlocks,
+        progressBlocks:         data.progressBlocks,
+        tasks:                  data.tasks,
+        completedGoalKeys:      data.completedGoalKeys,
+        sessionLoggedKeys:      data.sessionLoggedKeys,
+        fullyCompletedGoalKeys: data.fullyCompletedGoalKeys,
+        hasDraftBlocks:         data.hasDraftBlocks,
+        goalRecords:            data.goalRecords,
+      });
+    } finally {
+      loadingRef.current = false;
+    }
+  }, [applyWeekData]);
+
+  const patchGoalRecord = useCallback((
+    taskId: string,
+    patch: Partial<GoalRecord>,
+    goalDate: string = todayKeyRef.current,
+  ) => {
     let updated: GoalRecord | null = null;
+    const mapKey = goalCompletionKey(taskId, goalDate);
 
     setGoalRecords((prev) => {
       const next = new Map(prev);
-      const existing = next.get(taskId) ?? {
-        goalId: null,
-        timeLogged: false,
-        isFullyCompleted: false,
+      const existing = next.get(mapKey) ?? {
+        goalId:                   null,
+        timeLogged:               false,
+        isFullyCompleted:         false,
+        baselineProgressSnapshot: null,
       };
       updated = { ...existing, ...patch };
-      next.set(taskId, updated);
+      next.set(mapKey, updated);
       return next;
     });
 
+    if (patch.timeLogged !== undefined) {
+      setSessionLoggedKeys((keys) => {
+        const set = new Set(keys);
+        if (patch.timeLogged) set.add(mapKey);
+        else set.delete(mapKey);
+        return [...set];
+      });
+    }
+
+    if (patch.isFullyCompleted !== undefined) {
+      setFullyCompletedGoalKeys((keys) => {
+        const set = new Set(keys);
+        if (patch.isFullyCompleted) set.add(mapKey);
+        else set.delete(mapKey);
+        return [...set];
+      });
+    }
+
     if (patch.timeLogged !== undefined || patch.isFullyCompleted !== undefined) {
       setCompletedGoalKeys((keys) => {
-        if (!updated) return keys;
         const set = new Set(keys);
-        const key = goalCompletionKey(taskId, todayDateString());
-        if (updated.timeLogged || updated.isFullyCompleted) set.add(key);
-        else set.delete(key);
+        if (updated?.timeLogged || updated?.isFullyCompleted) set.add(mapKey);
+        else set.delete(mapKey);
         return [...set];
       });
     }
@@ -126,29 +219,43 @@ export function PlannerScheduleProvider({ children }: { children: React.ReactNod
 
   const ensureLoaded = useCallback(async () => {
     if (loaded || loadingRef.current) return;
-    loadingRef.current = true;
-    try {
-      const todayStr = todayDateString();
-      const { weekStart, weekEnd } = getWeekBounds(todayStr);
-      const data = await loadPlannerWeekData(weekStart, weekEnd);
-      applyWeekData({
-        blocks:            data.calendarBlocks,
-        progressBlocks:    data.progressBlocks,
-        tasks:             data.tasks,
-        completedGoalKeys: data.completedGoalKeys,
-        hasDraftBlocks:    data.hasDraftBlocks,
-        goalRecords:       data.goalRecords,
-      });
-    } finally {
-      loadingRef.current = false;
-    }
-  }, [applyWeekData, loaded]);
+    await refreshSchedule();
+  }, [loaded, refreshSchedule]);
 
-  const todayStr = todayDateString();
+  useEffect(() => {
+    const tick = () => {
+      const next = todayDateString();
+      if (next === todayKeyRef.current) return;
+      todayKeyRef.current = next;
+      setTodayKey(next);
+      void refreshSchedule();
+    };
+
+    const id = window.setInterval(tick, 60_000);
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") tick();
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+
+    return () => {
+      window.clearInterval(id);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
+  }, [refreshSchedule]);
 
   const completedGoals = useMemo(
     () => new Set(completedGoalKeys),
     [completedGoalKeys],
+  );
+
+  const sessionLogged = useMemo(
+    () => new Set(sessionLoggedKeys),
+    [sessionLoggedKeys],
+  );
+
+  const fullyCompleted = useMemo(
+    () => new Set(fullyCompletedGoalKeys),
+    [fullyCompletedGoalKeys],
   );
 
   const tasksById = useMemo(
@@ -160,34 +267,72 @@ export function PlannerScheduleProvider({ children }: { children: React.ReactNod
   const hasDrafts     = hasDraftBlocks || hasDraftLocal;
 
   const timelineBlocks = useMemo(
-    () => buildTimelineBlocks(blocks, hasDrafts, todayStr, completedGoals, isMissedBlock),
-    [blocks, hasDrafts, todayStr, completedGoals],
+    () => buildTimelineBlocks(blocks, hasDrafts, todayKey, completedGoals, isMissedBlock),
+    [blocks, hasDrafts, todayKey, completedGoals],
   );
 
   const todayTableRows = useMemo(() => {
     const dayRows = computeLiveDailyGoals(
-      [todayStr],
+      [todayKey],
       timelineBlocks,
       progressBlocks,
       tasksById,
+      sessionLogged,
+      fullyCompleted,
       completedGoals,
-      todayStr,
+      todayKey,
     );
     const entries = dayRows[0] ?? [];
-    return liveGoalEntriesToTableRows(entries, tasksById, goalRecords);
-  }, [todayStr, timelineBlocks, progressBlocks, tasksById, completedGoals, goalRecords]);
+    return liveGoalEntriesToTableRows(entries, tasksById, goalRecords, todayKey);
+  }, [
+    todayKey,
+    timelineBlocks,
+    progressBlocks,
+    tasksById,
+    sessionLogged,
+    fullyCompleted,
+    completedGoals,
+    goalRecords,
+  ]);
+
+  const upcomingMilestones = useMemo(
+    () => computeUpcomingMilestones(tasks, todayKey),
+    [tasks, todayKey],
+  );
 
   const value = useMemo(
     () => ({
       loaded,
       todayTableRows,
+      upcomingMilestones,
+      goalRecords,
+      sessionLoggedKeys,
+      fullyCompletedGoalKeys,
+      completedGoalKeys,
       progressBlocks,
       applyWeekData,
+      syncGoalMetadata,
       syncBlocks,
       patchGoalRecord,
       ensureLoaded,
+      refreshSchedule,
     }),
-    [loaded, todayTableRows, progressBlocks, applyWeekData, syncBlocks, patchGoalRecord, ensureLoaded],
+    [
+      loaded,
+      todayTableRows,
+      upcomingMilestones,
+      goalRecords,
+      sessionLoggedKeys,
+      fullyCompletedGoalKeys,
+      completedGoalKeys,
+      progressBlocks,
+      applyWeekData,
+      syncGoalMetadata,
+      syncBlocks,
+      patchGoalRecord,
+      ensureLoaded,
+      refreshSchedule,
+    ],
   );
 
   return (

@@ -14,6 +14,8 @@ export default async function PlannerPage() {
       progressBlocks={weekData.progressBlocks}
       tasks={weekData.tasks}
       completedGoalKeys={weekData.completedGoalKeys}
+      sessionLoggedKeys={weekData.sessionLoggedKeys}
+      fullyCompletedGoalKeys={weekData.fullyCompletedGoalKeys}
       hasDraftBlocks={weekData.hasDraftBlocks}
       goalRecords={weekData.goalRecords}
     >

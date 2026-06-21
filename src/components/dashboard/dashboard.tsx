@@ -16,21 +16,12 @@ import { getGreeting } from "@/lib/i18n";
 import { getCompletionLabel } from "@/lib/progress";
 import type { TodaySlot } from "@/types/database";
 
-interface MilestoneItem {
-  id: string;
-  title: string;
-  courseName: string;
-  dueInDays: number;
-  progressPercent: number;
-}
-
 interface Props {
-  milestones: MilestoneItem[];
   todaySchedules: TodaySlot[];
   driftState: DriftState;
 }
 
-export function Dashboard({ milestones, todaySchedules, driftState }: Props) {
+export function Dashboard({ todaySchedules, driftState }: Props) {
   const { translate, locale } = useLanguage();
   const { todayTableRows, ensureLoaded } = usePlannerSchedule();
 
@@ -40,10 +31,10 @@ export function Dashboard({ milestones, todaySchedules, driftState }: Props) {
 
   const goals = todayTableRows;
 
-  const finishedCount = goals.filter((g) => g.isFullyCompleted).length;
+  const completedTodayCount = goals.filter((g) => g.isFullyCompleted).length;
   const overallProgress =
     goals.length > 0
-      ? Math.round((finishedCount / goals.length) * 100)
+      ? Math.round((completedTodayCount / goals.length) * 100)
       : 0;
 
   return (
@@ -56,14 +47,14 @@ export function Dashboard({ milestones, todaySchedules, driftState }: Props) {
       <DriftAlertBanner drift={driftState} />
 
       <div className="space-y-8 p-4 sm:p-6 max-md:min-w-0 max-md:w-full max-md:overflow-x-hidden">
-        <MilestonesSection milestones={milestones} />
+        <MilestonesSection />
 
         <Card className="border-border shadow-sm max-md:min-w-0">
           <CardContent className="space-y-2 p-4">
             <div className="flex items-center justify-between gap-2 text-sm max-md:min-w-0">
               <span className="min-w-0 truncate font-medium">{translate("overallProgress")}</span>
               <span className="flex flex-row items-center gap-1 font-mono font-semibold text-primary">
-                <FractionCounter numerator={finishedCount} denominator={goals.length} />
+                <FractionCounter numerator={completedTodayCount} denominator={goals.length} />
                 <span className="font-normal text-muted-foreground">
                   {translate("tasksFinished")}
                 </span>

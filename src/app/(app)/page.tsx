@@ -23,28 +23,6 @@ export default async function HomePage() {
     ...todayStudyBlocks,
   ].sort((a, b) => a.startTime.localeCompare(b.startTime));
 
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-
-  const milestones = tasks
-    .filter(t => t.due_date)
-    .map(t => {
-      const due = new Date(t.due_date!);
-      due.setHours(0, 0, 0, 0);
-      const dueInDays = Math.ceil((due.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
-      return { task: t, dueInDays };
-    })
-    .filter(({ dueInDays }) => dueInDays >= 0 && dueInDays <= 14)
-    .sort((a, b) => a.dueInDays - b.dueInDays)
-    .slice(0, 4)
-    .map(({ task, dueInDays }) => ({
-      id:              task.id,
-      title:           task.title,
-      courseName:      task.course_name ?? "",
-      dueInDays,
-      progressPercent: task.status === "completed" ? 100 : task.progress ?? 0,
-    }));
-
   const scheduleTasks = weekData.tasks.length > 0 ? weekData.tasks : tasks;
 
   return (
@@ -53,11 +31,12 @@ export default async function HomePage() {
       progressBlocks={weekData.progressBlocks}
       tasks={scheduleTasks as typeof tasks}
       completedGoalKeys={weekData.completedGoalKeys}
+      sessionLoggedKeys={weekData.sessionLoggedKeys}
+      fullyCompletedGoalKeys={weekData.fullyCompletedGoalKeys}
       hasDraftBlocks={weekData.hasDraftBlocks}
       goalRecords={weekData.goalRecords}
     >
       <Dashboard
-        milestones={milestones}
         todaySchedules={todayAgenda}
         driftState={driftState}
       />

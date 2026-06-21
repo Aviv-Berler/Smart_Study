@@ -29,6 +29,13 @@ export function toDateKey(value: unknown): string {
   return String(value).slice(0, 10);
 }
 
+/** Normalize task due_date to a local calendar key (YYYY-MM-DD). */
+export function normalizeDueDateKey(value: unknown): string | null {
+  if (value == null) return null;
+  const key = toDateKey(value);
+  return /^\d{4}-\d{2}-\d{2}$/.test(key) ? key : null;
+}
+
 /** Normalize Postgres TIME / ISO time to HH:MM. */
 export function normalizeTimeKey(value: unknown): string {
   if (value == null) return "";

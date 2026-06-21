@@ -13,6 +13,8 @@ import {
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { DateSelect } from "@/components/ui/date-select";
+import { TimeSelect } from "@/components/ui/time-select";
 import {
   generateSchedulePlan,
   acceptConflictOption,
@@ -312,13 +314,14 @@ function BlockFormModal({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-[2px]"
+      className="fixed inset-0 z-50 overflow-y-auto bg-black/40 backdrop-blur-[2px]"
       onPointerDown={onClose}
     >
-      <div
-        className="w-80 rounded-xl border border-border bg-card p-5 shadow-2xl"
-        onPointerDown={e => e.stopPropagation()}
-      >
+      <div className="flex min-h-full items-start justify-center p-4 sm:items-center sm:p-6">
+        <div
+          className="my-auto w-full max-w-[20rem] overflow-visible rounded-xl border border-border bg-card p-5 shadow-2xl"
+          onPointerDown={e => e.stopPropagation()}
+        >
         <h3 className="mb-4 text-sm font-semibold">
           {isEdit ? "Edit Block Time" : "Add Manual Block"}
         </h3>
@@ -357,35 +360,34 @@ function BlockFormModal({
 
           {/* Date (create mode only) */}
           {!isEdit && (
-            <div>
+            <div className="min-w-0">
               <label className={labelCls}>Date</label>
-              <input
-                type="date"
+              <DateSelect
                 value={date}
-                onChange={e => setDate(e.target.value)}
-                className={inputCls}
+                onChange={setDate}
+                min={todayDateString()}
               />
             </div>
           )}
 
           {/* Start / End times — side by side */}
-          <div className="grid grid-cols-2 gap-2">
-            <div>
+          <div className="grid min-w-0 grid-cols-2 gap-2">
+            <div className="min-w-0">
               <label className={labelCls}>Start</label>
-              <input
-                type="time"
+              <TimeSelect
                 value={start}
-                onChange={e => setStart(e.target.value)}
-                className={inputCls}
+                onChange={setStart}
+                minuteStep={isEdit ? 1 : 15}
+                className="w-full justify-center"
               />
             </div>
-            <div>
+            <div className="min-w-0">
               <label className={labelCls}>End</label>
-              <input
-                type="time"
+              <TimeSelect
                 value={end}
-                onChange={e => setEnd(e.target.value)}
-                className={inputCls}
+                onChange={setEnd}
+                minuteStep={isEdit ? 1 : 15}
+                className="w-full justify-center"
               />
             </div>
           </div>
@@ -399,6 +401,7 @@ function BlockFormModal({
             {saving && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
             {saving ? "Saving…" : isEdit ? "Save" : "Add Block"}
           </Button>
+        </div>
         </div>
       </div>
     </div>
@@ -1110,9 +1113,10 @@ export function PlannerCalendar({
   const { translate } = useLanguage();
   const { toggleMobileMenu } = useSidebar();
   const onboarding = useOnboardingOptional();
-  const { syncBlocks, applyWeekData: applyScheduleWeekData, progressBlocks } = usePlannerSchedule();
+  const { syncBlocks, applyWeekData: applyScheduleWeekData, progressBlocks, sessionLoggedKeys, fullyCompletedGoalKeys, completedGoalKeys: providerCompletedGoalKeys } = usePlannerSchedule();
 
-  const todayStr = todayDateString();
+  const [todayKey, setTodayKey] = useState(() => todayDateString());
+  const todayKeyRef = useRef(todayKey);
 
   const [weekAnchor, setWeekAnchor] = useState<Date>(() => parseLocalDate(initialWeekStart));
   const weekBounds = useMemo(() => getWeekBounds(weekAnchor), [weekAnchor]);
@@ -1150,12 +1154,14 @@ export function PlannerCalendar({
     setHasDraftBlocks(data.hasDraftBlocks);
     setTaskList(data.tasks);
     applyScheduleWeekData({
-      blocks:            data.calendarBlocks,
-      progressBlocks:    data.progressBlocks,
-      tasks:             data.tasks,
-      completedGoalKeys: data.completedGoalKeys,
-      hasDraftBlocks:    data.hasDraftBlocks,
-      goalRecords:       data.goalRecords,
+      blocks:                 data.calendarBlocks,
+      progressBlocks:         data.progressBlocks,
+      tasks:                  data.tasks,
+      completedGoalKeys:      data.completedGoalKeys,
+      sessionLoggedKeys:      data.sessionLoggedKeys,
+      fullyCompletedGoalKeys: data.fullyCompletedGoalKeys,
+      hasDraftBlocks:         data.hasDraftBlocks,
+      goalRecords:            data.goalRecords,
     });
   }, [normalizeBlocks, applyScheduleWeekData]);
 
@@ -1176,6 +1182,31 @@ export function PlannerCalendar({
     await refreshCurrentWeek();
     router.refresh();
   }, [refreshCurrentWeek, router]);
+
+  // Midnight rollover — refetch week blocks when the local calendar day changes.
+  useEffect(() => {
+    const tick = () => {
+      const next = todayDateString();
+      if (next === todayKeyRef.current) return;
+      todayKeyRef.current = next;
+      setTodayKey(next);
+      loadedWeekStart.current = null;
+      const { weekStart } = getWeekBounds(parseLocalDate(next));
+      setWeekAnchor(parseLocalDate(weekStart));
+      void refreshCurrentWeek();
+    };
+
+    const id = window.setInterval(tick, 60_000);
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") tick();
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+
+    return () => {
+      window.clearInterval(id);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
+  }, [refreshCurrentWeek]);
 
   // Client fetch on mount — SSR props may be empty/stale; this matches post-AI refresh path.
   useEffect(() => {
@@ -1260,8 +1291,8 @@ export function PlannerCalendar({
 
   /** Same filtered array passed to CalendarGrid — goals must mirror visible timeline blocks */
   const timelineBlocks = useMemo(
-    () => buildTimelineBlocks(localBlocks, hasDrafts, todayStr, completedGoals, isMissedBlock),
-    [localBlocks, hasDrafts, todayStr, completedGoals],
+    () => buildTimelineBlocks(localBlocks, hasDrafts, todayKey, completedGoals, isMissedBlock),
+    [localBlocks, hasDrafts, todayKey, completedGoals],
   );
 
   useEffect(() => {
@@ -1280,10 +1311,36 @@ export function PlannerCalendar({
     [taskList],
   );
 
-  const weeklyGoalsByDay = useMemo(
-    () => computeLiveDailyGoals(dayKeys, timelineBlocks, progressBlocks, tasksById, completedGoals, todayStr),
-    [dayKeys, timelineBlocks, progressBlocks, tasksById, completedGoals, todayStr],
-  );
+  const weeklyGoalsByDay = useMemo(() => {
+    const sessionLogged = new Set(
+      sessionLoggedKeys.length > 0 ? sessionLoggedKeys : completedGoalKeys,
+    );
+    const fullyCompleted = new Set(fullyCompletedGoalKeys);
+    const missedCleared  = new Set(
+      providerCompletedGoalKeys.length > 0 ? providerCompletedGoalKeys : completedGoalKeys,
+    );
+
+    return computeLiveDailyGoals(
+      dayKeys,
+      timelineBlocks,
+      progressBlocks,
+      tasksById,
+      sessionLogged,
+      fullyCompleted,
+      missedCleared,
+      todayKey,
+    );
+  }, [
+    dayKeys,
+    timelineBlocks,
+    progressBlocks,
+    tasksById,
+    sessionLoggedKeys,
+    fullyCompletedGoalKeys,
+    providerCompletedGoalKeys,
+    completedGoalKeys,
+    todayKey,
+  ]);
 
   const handlePrevWeek = () => setWeekAnchor((a) => subDays(a, 7));
   const handleNextWeek = () => setWeekAnchor((a) => addDays(a, 7));
@@ -1297,7 +1354,7 @@ export function PlannerCalendar({
 
   const handleResetWeek = async () => {
     setResetting(true);
-    const result = await clearPlannerRange(todayStr);
+    const result = await clearPlannerRange(todayKey);
     setResetting(false);
 
     if (!result.success) {
@@ -1307,7 +1364,7 @@ export function PlannerCalendar({
 
     // Forward-only: never remove historical AI blocks
     setLocalBlocks((prev) =>
-      prev.filter((b) => b.kind !== "ai" || b.scheduled_date < todayStr),
+      prev.filter((b) => b.kind !== "ai" || b.scheduled_date < todayKey),
     );
     toast.success(`${translate("boardCleared")} (${isolateLtr(result.deleted ?? 0)})`);
     router.refresh();
@@ -1320,7 +1377,7 @@ export function PlannerCalendar({
     newStart: string,
     newEnd: string,
   ) => {
-    if (newDate < todayStr) {
+    if (newDate < todayKey) {
       toast.error("Cannot schedule blocks in the past.");
       return;
     }

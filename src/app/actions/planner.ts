@@ -11,6 +11,8 @@ import { getHorizonDateStrings, getPlanHorizon, getHistoryStart, toDateKey, norm
 import { isolateLtr } from "@/lib/bidi";
 import {
   buildCompletedGoalKeys,
+  buildFullyCompletedGoalKeys,
+  buildSessionLoggedKeys,
   filterMissedBlocksForDrift,
   getMissedHorizonStart,
   groupMissedMinutesByTask,
@@ -1793,22 +1795,25 @@ function mapStudyBlock(b: {
 }
 
 export interface ScheduleGoalRecord {
-  taskId:           string;
-  goalId:           string | null;
-  timeLogged:       boolean;
-  isFullyCompleted: boolean;
+  taskId:                   string;
+  goalDate:                 string;
+  goalId:                   string | null;
+  timeLogged:               boolean;
+  isFullyCompleted:         boolean;
+  baselineProgressSnapshot: number | null;
 }
 
 export interface PlannerWeekData {
-  calendarBlocks:      CalendarBlock[];
-  hasDraftBlocks:      boolean;
-  lockedHistoryBlocks: LockedHistoryBlock[];
-  /** All lifecycle study blocks used for cumulative progress */
-  progressBlocks:      CalendarBlock[];
-  /** All time_logged / completed goal keys across project lifecycle */
-  completedGoalKeys:   string[];
-  tasks:               Task[];
-  goalRecords:         ScheduleGoalRecord[];
+  calendarBlocks:          CalendarBlock[];
+  hasDraftBlocks:          boolean;
+  lockedHistoryBlocks:     LockedHistoryBlock[];
+  progressBlocks:          CalendarBlock[];
+  /** Union — missed-block clearing (session logged ∪ parent attested) */
+  completedGoalKeys:       string[];
+  sessionLoggedKeys:       string[];
+  fullyCompletedGoalKeys:  string[];
+  tasks:                   Task[];
+  goalRecords:             ScheduleGoalRecord[];
 }
 
 /** Fetches study blocks, fixed courses, and history baseline for a calendar week. */
@@ -1817,13 +1822,15 @@ export async function loadPlannerWeekData(
   weekEnd:   string,
 ): Promise<PlannerWeekData> {
   const empty: PlannerWeekData = {
-    calendarBlocks:      [],
-    hasDraftBlocks:      false,
-    lockedHistoryBlocks: [],
-    progressBlocks:      [],
-    completedGoalKeys:   [],
-    tasks:               [],
-    goalRecords:         [],
+    calendarBlocks:         [],
+    hasDraftBlocks:         false,
+    lockedHistoryBlocks:    [],
+    progressBlocks:         [],
+    completedGoalKeys:      [],
+    sessionLoggedKeys:      [],
+    fullyCompletedGoalKeys: [],
+    tasks:                  [],
+    goalRecords:            [],
   };
 
   const supabase = await createClient();
@@ -1874,7 +1881,7 @@ export async function loadPlannerWeekData(
 
   const { data: goals, error: goalsError } = await supabase
     .from("daily_goals")
-    .select("id, task_id, goal_date, time_logged, is_fully_completed")
+    .select("id, task_id, goal_date, time_logged, is_fully_completed, baseline_progress_snapshot")
     .eq("user_id", user.id);
 
   if (goalsError) {
@@ -1904,17 +1911,21 @@ export async function loadPlannerWeekData(
     console.error("[loadPlannerWeekData] tasks error:", tasksError.message);
   }
 
-  const completedGoalKeys = Array.from(buildCompletedGoalKeys(goals ?? []));
+  const completedGoalKeys      = Array.from(buildCompletedGoalKeys(goals ?? []));
+  const sessionLoggedKeys      = Array.from(buildSessionLoggedKeys(goals ?? []));
+  const fullyCompletedGoalKeys = Array.from(buildFullyCompletedGoalKeys(goals ?? []));
 
   const weekGoals = (goals ?? []).filter(
     (g) => toDateKey(g.goal_date) >= weekStart && toDateKey(g.goal_date) <= weekEnd,
   );
 
   const goalRecords: ScheduleGoalRecord[] = weekGoals.map((g) => ({
-    taskId:           String(g.task_id).trim(),
-    goalId:           g.id as string,
-    timeLogged:       g.time_logged,
-    isFullyCompleted: g.is_fully_completed,
+    taskId:                   String(g.task_id).trim(),
+    goalDate:                 toDateKey(g.goal_date),
+    goalId:                   g.id as string,
+    timeLogged:               g.time_logged,
+    isFullyCompleted:         g.is_fully_completed,
+    baselineProgressSnapshot: g.baseline_progress_snapshot ?? null,
   }));
 
   const calendarBlocks: CalendarBlock[] = (studyBlocks ?? []).map(mapStudyBlock);
@@ -1966,6 +1977,8 @@ export async function loadPlannerWeekData(
     lockedHistoryBlocks,
     progressBlocks,
     completedGoalKeys,
+    sessionLoggedKeys,
+    fullyCompletedGoalKeys,
     tasks:       (taskRows ?? []) as unknown as Task[],
     goalRecords,
   };
@@ -2013,12 +2026,12 @@ export async function clearPlannerRange(startDate: string, _endDate?: string) {
 
 // ── getTodayStudyBlocks ───────────────────────────────────────────────────────
 /** Approved AI study blocks for today — merged into dashboard agenda. */
-export async function getTodayStudyBlocks(): Promise<TodaySlot[]> {
+export async function getTodayStudyBlocks(forDate: string = todayDateString()): Promise<TodaySlot[]> {
   const supabase = await createClient();
   const { data: { user }, error: authError } = await supabase.auth.getUser();
   if (authError || !user) return [];
 
-  const todayStr = new Date().toISOString().split("T")[0];
+  const todayStr = forDate;
 
   const { data } = await supabase
     .from("scheduled_blocks")

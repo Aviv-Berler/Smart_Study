@@ -94,6 +94,8 @@ export interface DailyGoal {
   target_minutes: number;
   time_logged: boolean;
   is_fully_completed: boolean;
+  /** Exact registry progress (X) captured when parent attestation is checked */
+  baseline_progress_snapshot: number | null;
   created_at: string;
   updated_at: string;
 }
@@ -115,6 +117,8 @@ export interface DailyGoalTableRow {
   targetMinutes: number;
   /** Absolute cumulative target % through end of today (shared with Planner) */
   cumulativeTargetPct: number;
+  /** Registry baseline X (tasks.progress) — used for snapshot/restore on attestation toggle */
+  registryProgressPct: number;
   timeLogged: boolean;
   isFullyCompleted: boolean;
   /** "{Task Name} — XX%" written by approvePlan; null for manually created goals */

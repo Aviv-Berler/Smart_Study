@@ -52,14 +52,37 @@ export function goalCompletionKey(taskId: string, goalDate: string): string {
   return `${taskId}__${goalDate}`;
 }
 
-export function buildCompletedGoalKeys(
-  goals: Array<{
-    task_id: string;
-    goal_date: string;
-    time_logged: boolean;
-    is_fully_completed: boolean;
-  }>,
-): Set<string> {
+type DailyGoalKeyRow = {
+  task_id: string;
+  goal_date: string;
+  time_logged: boolean;
+  is_fully_completed: boolean;
+};
+
+/** Session logged only — drives logged-block cumulative math and session UX. */
+export function buildSessionLoggedKeys(goals: DailyGoalKeyRow[]): Set<string> {
+  const keys = new Set<string>();
+  for (const g of goals) {
+    if (g.time_logged) {
+      keys.add(goalCompletionKey(g.task_id, g.goal_date));
+    }
+  }
+  return keys;
+}
+
+/** Parent attestation only — drives snapshot progress restore, not session pills. */
+export function buildFullyCompletedGoalKeys(goals: DailyGoalKeyRow[]): Set<string> {
+  const keys = new Set<string>();
+  for (const g of goals) {
+    if (g.is_fully_completed) {
+      keys.add(goalCompletionKey(g.task_id, g.goal_date));
+    }
+  }
+  return keys;
+}
+
+/** Union — clears missed blocks when either session logged or parent attested. */
+export function buildCompletedGoalKeys(goals: DailyGoalKeyRow[]): Set<string> {
   const keys = new Set<string>();
   for (const g of goals) {
     if (g.time_logged || g.is_fully_completed) {
