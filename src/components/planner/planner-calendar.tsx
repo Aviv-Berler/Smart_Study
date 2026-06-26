@@ -44,6 +44,7 @@ import {
   TimeRange,
 } from "@/components/ui/bidi-text";
 import { isolateLtr } from "@/lib/bidi";
+import { cn } from "@/lib/utils";
 import { getPlanHorizon, getWeekBounds, parseLocalDate, toDateKey, normalizeTimeKey } from "@/lib/plan-horizon";
 import {
   getBlockInteractivity,
@@ -103,6 +104,8 @@ function blockClass(b: CalendarBlock, missed = false): string {
   }
   if (b.kind === "fixed")
     return "bg-blue-500/20 text-blue-700 dark:text-blue-300 ring-1 ring-blue-500/40";
+  if (b.kind === "one_off")
+    return "bg-violet-500/20 text-violet-800 dark:text-violet-300 ring-1 ring-violet-500/40";
   if (b.is_locked)
     return "bg-emerald-400/25 text-emerald-800 dark:text-emerald-300 ring-1 ring-emerald-500/40";
   return "bg-primary/20 text-primary ring-1 ring-primary/30";
@@ -245,24 +248,36 @@ type BlockFormMode =
 function BlockFormModal({
   mode,
   tasks,
+  courses = [],
   onSaveEdit,
   onSaveCreate,
   onClose,
 }: {
   mode:          BlockFormMode;
   tasks:         Task[];
-  onSaveEdit?:   (blockId: string, start: string, end: string) => Promise<void>;
+  courses?:      { id: string; course_name: string }[];
+  onSaveEdit?:   (blockId: string, start: string, end: string, date: string) => Promise<void>;
   onSaveCreate?: (data: {
-    task_id: string | null; title: string;
-    scheduled_date: string; start_time: string; end_time: string;
+    block_kind:     "manual" | "one_off";
+    task_id:        string | null;
+    title:          string;
+    scheduled_date: string;
+    start_time:     string;
+    end_time:       string;
   }) => Promise<void>;
   onClose: () => void;
 }) {
   const isEdit = mode.type === "edit";
 
+  const [blockType, setBlockType] = useState<"task" | "completion">(
+    isEdit
+      ? (mode.block.kind === "one_off" ? "completion" : "task")
+      : "task",
+  );
   const [taskId, setTaskId] = useState<string>(
     isEdit ? (mode.block.task_id ?? "") : ""
   );
+  const [courseId, setCourseId] = useState<string>("");
   const [title,  setTitle]  = useState(
     isEdit ? mode.block.title : ""
   );
@@ -287,7 +302,19 @@ function BlockFormModal({
   };
 
   const handleSave = async () => {
-    if (!title.trim()) { toast.error("Block title is required."); return; }
+    const isCompletion = blockType === "completion";
+    const resolvedTitle = isCompletion
+      ? (courses.find((c) => c.id === courseId)?.course_name ?? title).trim()
+      : title.trim();
+
+    if (!resolvedTitle) {
+      toast.error(isCompletion ? "Please select a course." : "Block title is required.");
+      return;
+    }
+    if (!isEdit && isCompletion && !courseId && !title.trim()) {
+      toast.error("Please select a course.");
+      return;
+    }
     const durMin = hhmm(end) - hhmm(start);
     if (durMin < MIN_DURATION) {
       toast.error(`Block must be at least ${MIN_DURATION} minutes.`);
@@ -295,11 +322,12 @@ function BlockFormModal({
     }
     setSaving(true);
     if (isEdit && onSaveEdit) {
-      await onSaveEdit(mode.block.id, start, end);
+      await onSaveEdit(mode.block.id, start, end, date);
     } else if (!isEdit && onSaveCreate) {
       await onSaveCreate({
-        task_id:        taskId || null,
-        title:          title.trim(),
+        block_kind:     isCompletion ? "one_off" : "manual",
+        task_id:        isCompletion ? null : (taskId || null),
+        title:          resolvedTitle,
         scheduled_date: date,
         start_time:     start,
         end_time:       end,
@@ -330,12 +358,45 @@ function BlockFormModal({
           onPointerDown={e => e.stopPropagation()}
         >
         <h3 className="mb-4 text-sm font-semibold">
-          {isEdit ? "Edit Block Time" : "Add Manual Block"}
+          {isEdit ? "Edit Block" : "Add Manual Block"}
         </h3>
 
         <div className="space-y-3" dir="ltr">
-          {/* Task selector (create mode only) */}
+          {/* Block type (create mode) */}
           {!isEdit && (
+            <div>
+              <label className={labelCls}>Block type</label>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => setBlockType("task")}
+                  className={cn(
+                    "flex-1 rounded-md border px-2 py-1.5 text-xs font-medium transition-colors",
+                    blockType === "task"
+                      ? "border-primary bg-primary/10 text-primary"
+                      : "border-border text-muted-foreground hover:bg-muted/50",
+                  )}
+                >
+                  Task / משימה
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setBlockType("completion")}
+                  className={cn(
+                    "flex-1 rounded-md border px-2 py-1.5 text-xs font-medium transition-colors",
+                    blockType === "completion"
+                      ? "border-violet-500 bg-violet-500/10 text-violet-700 dark:text-violet-300"
+                      : "border-border text-muted-foreground hover:bg-muted/50",
+                  )}
+                >
+                  Completion / השלמה
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Task selector (create + task type) */}
+          {!isEdit && blockType === "task" && (
             <div>
               <label className={labelCls}>Task (optional)</label>
               <select
@@ -351,7 +412,29 @@ function BlockFormModal({
             </div>
           )}
 
+          {/* Course selector (create + completion type) */}
+          {!isEdit && blockType === "completion" && (
+            <div>
+              <label className={labelCls}>Course</label>
+              <select
+                value={courseId}
+                onChange={e => {
+                  setCourseId(e.target.value);
+                  const c = courses.find(x => x.id === e.target.value);
+                  if (c) setTitle(c.course_name);
+                }}
+                className={inputCls}
+              >
+                <option value="">— Select course —</option>
+                {courses.map(c => (
+                  <option key={c.id} value={c.id}>{c.course_name}</option>
+                ))}
+              </select>
+            </div>
+          )}
+
           {/* Title */}
+          {(isEdit || blockType === "task") && (
           <div>
             <label className={labelCls}>Title</label>
             <input
@@ -364,18 +447,16 @@ function BlockFormModal({
               disabled={isEdit}
             />
           </div>
-
-          {/* Date (create mode only) */}
-          {!isEdit && (
-            <div className="min-w-0">
-              <label className={labelCls}>Date</label>
-              <DateSelect
-                value={date}
-                onChange={setDate}
-                min={todayDateString()}
-              />
-            </div>
           )}
+
+          {/* Date */}
+          <div className="min-w-0">
+            <label className={labelCls}>Date</label>
+            <DateSelect
+              value={date}
+              onChange={setDate}
+            />
+          </div>
 
           {/* Start / End times — side by side */}
           <div className="grid min-w-0 grid-cols-2 gap-2">
@@ -474,7 +555,7 @@ function CalendarGrid({
   const colCount = days.length;
 
   const sampleTourBlockId =
-    blocks.find((b) => b.kind === "ai" || b.kind === "manual")?.id ?? null;
+    blocks.find((b) => b.kind === "ai" || b.kind === "manual" || b.kind === "one_off")?.id ?? null;
 
   // Focus Mode: when ANY draft block exists, dim all previously-approved blocks
   // so the user's eye is drawn to what the AI is currently proposing.
@@ -1125,26 +1206,24 @@ export function PlannerCalendar({
   initialBlocks,
   initialHasDraftBlocks,
   tasks = [],
+  courses = [],
   lockedHistoryBlocks: initialLockedHistory = [],
   completedGoalKeys: initialCompletedGoalKeys = [],
   initialWeekStart,
 }: {
   initialBlocks:         CalendarBlock[];
   initialHasDraftBlocks: boolean;
-  /** Active tasks — used for the weekly goals summary row */
   tasks?:                Task[];
-  /** Locked blocks before the viewed week — cumulative progress baseline */
+  courses?:              { id: string; course_name: string }[];
   lockedHistoryBlocks?:  LockedHistoryBlock[];
-  /** Daily goals marked done — drives missed-block detection */
   completedGoalKeys?:    string[];
-  /** Sunday of the SSR-loaded week (yyyy-MM-dd) */
   initialWeekStart:      string;
 }) {
   const router = useRouter();
   const { translate } = useLanguage();
   const { toggleMobileMenu } = useSidebar();
   const onboarding = useOnboardingOptional();
-  const { syncBlocks, applyWeekData: applyScheduleWeekData, progressBlocks, sessionLoggedKeys, fullyCompletedGoalKeys, completedGoalKeys: providerCompletedGoalKeys } = usePlannerSchedule();
+  const { syncBlocks, applyWeekData: applyScheduleWeekData, progressBlocks, sessionLoggedKeys, fullyCompletedGoalKeys, completedGoalKeys: providerCompletedGoalKeys, tasks: providerTasks } = usePlannerSchedule();
 
   const [todayKey, setTodayKey] = useState(() => todayDateString());
   const todayKeyRef = useRef(todayKey);
@@ -1341,9 +1420,11 @@ export function PlannerCalendar({
   }, [localBlocks, hasDrafts, completedGoalKeys, syncBlocks, weekBounds.weekStart, weekBounds.weekEnd]);
 
   // ── Weekly goals — recomputes on every localBlocks change (DnD / resize) ─────
+  const effectiveTasks = providerTasks.length > 0 ? providerTasks : taskList;
+
   const tasksById = useMemo(
-    () => new Map(taskList.map(t => [String(t.id).trim(), t])),
-    [taskList],
+    () => new Map(effectiveTasks.map(t => [String(t.id).trim(), t])),
+    [effectiveTasks],
   );
 
   const weeklyGoalsByDay = useMemo(() => {
@@ -1412,11 +1493,6 @@ export function PlannerCalendar({
     newStart: string,
     newEnd: string,
   ) => {
-    if (newDate < todayKey) {
-      toast.error("Cannot schedule blocks in the past.");
-      return;
-    }
-
     const original = localBlocks.find(b => b.id === blockId);
     setLocalBlocks(prev => prev.map(b =>
       b.id === blockId
@@ -1463,18 +1539,28 @@ export function PlannerCalendar({
   const [creatingBlock, setCreatingBlock] = useState(false);
 
   const handleCreateBlock = async (data: {
-    task_id: string | null; title: string;
-    scheduled_date: string; start_time: string; end_time: string;
+    block_kind:     "manual" | "one_off";
+    task_id:        string | null;
+    title:          string;
+    scheduled_date: string;
+    start_time:     string;
+    end_time:       string;
   }) => {
-    const result = await createManualBlock(data);
+    const result = await createManualBlock({
+      task_id:        data.task_id,
+      title:          data.title,
+      scheduled_date: data.scheduled_date,
+      start_time:     data.start_time,
+      end_time:       data.end_time,
+      kind:           data.block_kind,
+    });
     if (!result.success) {
       toast.error(`Could not add block: ${result.error}`);
       return;
     }
-    // Optimistically add to local state as a locked block so UI updates instantly
     const newBlock: CalendarBlock = {
       id:             (result.block as { id: string }).id,
-      kind:           "manual",
+      kind:           data.block_kind,
       title:          data.title,
       scheduled_date: data.scheduled_date,
       start_time:     data.start_time,
@@ -1490,19 +1576,30 @@ export function PlannerCalendar({
   // ── Edit (manual time adjustment) ────────────────────────────────────────
   const [editingBlock, setEditingBlock] = useState<CalendarBlock | null>(null);
 
-  const handleBlockEdit = async (blockId: string, newStart: string, newEnd: string) => {
+  const handleBlockEdit = async (
+    blockId: string,
+    newStart: string,
+    newEnd: string,
+    newDate: string,
+  ) => {
     const original = localBlocks.find(b => b.id === blockId);
-    // Optimistic update
     setLocalBlocks(prev => prev.map(b =>
-      b.id === blockId ? { ...b, start_time: newStart, end_time: newEnd } : b
+      b.id === blockId
+        ? { ...b, scheduled_date: newDate, start_time: newStart, end_time: newEnd }
+        : b
     ));
-    const result = await updateBlockTime(blockId, newStart, newEnd);
+    const result = await updateBlockTime(blockId, newStart, newEnd, newDate);
     if (!result.success) {
       toast.error(`Could not save edit: ${result.error}`);
       if (original) {
         setLocalBlocks(prev => prev.map(b =>
           b.id === blockId
-            ? { ...b, start_time: original.start_time, end_time: original.end_time }
+            ? {
+                ...b,
+                scheduled_date: original.scheduled_date,
+                start_time:     original.start_time,
+                end_time:       original.end_time,
+              }
             : b
         ));
       }
@@ -1562,7 +1659,9 @@ export function PlannerCalendar({
   };
 
   const planHorizon = getPlanHorizon();
-  const hasAnyStudyBlock = localBlocks.some(b => b.kind === "ai" || b.kind === "manual");
+  const hasAnyStudyBlock = localBlocks.some(b =>
+    b.kind === "ai" || b.kind === "manual" || b.kind === "one_off",
+  );
 
   return (
     <div className="space-y-6">
@@ -1667,11 +1766,9 @@ export function PlannerCalendar({
       {/* Create Modal — add a new locked block manually */}
       {creatingBlock && (
         <BlockFormModal
-          mode={{
-            type: "create",
-            defaultDate: dayKeys[0] ?? toDateKey(days[0]),
-          }}
+          mode={{ type: "create", defaultDate: dayKeys[0] ?? toDateKey(days[0]) }}
           tasks={tasks}
+          courses={courses}
           onSaveCreate={handleCreateBlock}
           onClose={() => setCreatingBlock(false)}
         />

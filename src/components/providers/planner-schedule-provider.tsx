@@ -59,6 +59,8 @@ interface PlannerScheduleContextValue {
     weekEnd:           string,
   ) => void;
   patchGoalRecord: (taskId: string, patch: Partial<GoalRecord>, goalDate?: string) => void;
+  patchTask: (taskId: string, patch: Partial<Task>) => void;
+  tasks: Task[];
   ensureLoaded: () => Promise<void>;
   refreshSchedule: () => Promise<void>;
 }
@@ -97,6 +99,30 @@ export function PlannerScheduleProvider({ children }: { children: React.ReactNod
 
   const loadingRef = useRef(false);
   const todayKeyRef = useRef(todayKey);
+  const pendingTaskPatchesRef = useRef<Map<string, Partial<Task>>>(new Map());
+
+  const mergeTasksFromServer = useCallback((incoming: Task[], prev: Task[]): Task[] => {
+    if (pendingTaskPatchesRef.current.size === 0 && prev.length === 0) return incoming;
+
+    const prevById = new Map(prev.map((t) => [t.id, t]));
+
+    return incoming.map((t) => {
+      const pending = pendingTaskPatchesRef.current.get(t.id);
+      const local = prevById.get(t.id);
+      if (!pending && !local) return t;
+
+      const merged = { ...t, ...(local ?? {}), ...(pending ?? {}) };
+
+      if (pending) {
+        const caughtUp = (Object.keys(pending) as (keyof Task)[]).every(
+          (key) => t[key] === merged[key],
+        );
+        if (caughtUp) pendingTaskPatchesRef.current.delete(t.id);
+      }
+
+      return merged;
+    });
+  }, []);
 
   const applyWeekData = useCallback((data: {
     blocks:                 CalendarBlock[];
@@ -110,14 +136,14 @@ export function PlannerScheduleProvider({ children }: { children: React.ReactNod
   }) => {
     setBlocks(data.blocks.map(normalizeCalendarBlock));
     setProgressBlocks(data.progressBlocks.map(normalizeCalendarBlock));
-    setTasks(data.tasks);
+    setTasks((prev) => mergeTasksFromServer(data.tasks, prev));
     setSessionLoggedKeys(data.sessionLoggedKeys);
     setFullyCompletedGoalKeys(data.fullyCompletedGoalKeys);
     setCompletedGoalKeys(data.completedGoalKeys);
     setHasDraftBlocks(data.hasDraftBlocks);
     setGoalRecords(goalRecordsToMap(data.goalRecords));
     setLoaded(true);
-  }, []);
+  }, [mergeTasksFromServer]);
 
   const syncGoalMetadata = useCallback((data: {
     completedGoalKeys:      string[];
@@ -217,6 +243,14 @@ export function PlannerScheduleProvider({ children }: { children: React.ReactNod
     }
   }, []);
 
+  const patchTask = useCallback((taskId: string, patch: Partial<Task>) => {
+    const existing = pendingTaskPatchesRef.current.get(taskId) ?? {};
+    pendingTaskPatchesRef.current.set(taskId, { ...existing, ...patch });
+    setTasks((prev) =>
+      prev.map((t) => (t.id === taskId ? { ...t, ...patch } : t)),
+    );
+  }, []);
+
   const ensureLoaded = useCallback(async () => {
     if (loaded || loadingRef.current) return;
     await refreshSchedule();
@@ -314,6 +348,8 @@ export function PlannerScheduleProvider({ children }: { children: React.ReactNod
       syncGoalMetadata,
       syncBlocks,
       patchGoalRecord,
+      patchTask,
+      tasks,
       ensureLoaded,
       refreshSchedule,
     }),
@@ -330,6 +366,8 @@ export function PlannerScheduleProvider({ children }: { children: React.ReactNod
       syncGoalMetadata,
       syncBlocks,
       patchGoalRecord,
+      patchTask,
+      tasks,
       ensureLoaded,
       refreshSchedule,
     ],

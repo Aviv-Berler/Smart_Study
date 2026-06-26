@@ -2,13 +2,17 @@ import { Suspense } from "react";
 import { PlannerCalendar } from "@/components/planner/planner-calendar";
 import { PlannerPageSkeleton } from "@/components/planner/planner-skeleton";
 import { ScheduleHydrator } from "@/components/providers/schedule-hydrator";
+import { getCourses } from "@/app/actions/courses";
 import { loadPlannerWeekData } from "@/app/actions/planner";
 import { getWeekBounds } from "@/lib/plan-horizon";
 import { todayDateString } from "@/lib/drift-detection";
 
 async function PlannerPageContent() {
   const { weekStart, weekEnd } = getWeekBounds(todayDateString());
-  const weekData = await loadPlannerWeekData(weekStart, weekEnd);
+  const [weekData, courses] = await Promise.all([
+    loadPlannerWeekData(weekStart, weekEnd),
+    getCourses(),
+  ]);
 
   return (
     <ScheduleHydrator
@@ -28,6 +32,7 @@ async function PlannerPageContent() {
         completedGoalKeys={weekData.completedGoalKeys}
         initialWeekStart={weekStart}
         tasks={weekData.tasks}
+        courses={courses}
       />
     </ScheduleHydrator>
   );

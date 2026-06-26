@@ -1,6 +1,6 @@
 "use server";
 
-import { differenceInCalendarDays } from "date-fns";
+import { addDays, differenceInCalendarDays, format } from "date-fns";
 import { revalidatePath } from "next/cache";
 import Groq from "groq-sdk";
 import type { ChatCompletion } from "groq-sdk/resources/chat/completions";
@@ -8,6 +8,7 @@ import { APIError } from "groq-sdk";
 import { createClient } from "@/utils/supabase/server";
 import { parseGroqApiKeys } from "@/lib/groq";
 import { getHorizonDateStrings, getPlanHorizon, getHistoryStart, toDateKey, normalizeTimeKey } from "@/lib/plan-horizon";
+import { sortTasksByDisplayOrder } from "@/lib/task-sort";
 import { isolateLtr } from "@/lib/bidi";
 import {
   buildCompletedGoalKeys,
@@ -72,6 +73,7 @@ interface ActiveTask {
   due_date: string | null;
   estimated_duration: number | null;
   progress: number | null;
+  user_priority_index: number | null;
 }
 
 interface UserPlanningSettings {
@@ -124,7 +126,10 @@ function classifyTasksByPriority(tasks: ActiveTask[], nowMs = Date.now()) {
 
 function priorityTaskOrder(tasks: ActiveTask[]): string[] {
   const { tier1, tier2 } = classifyTasksByPriority(tasks);
-  return [...tier1, ...tier2].map(t => t.id);
+  return [
+    ...sortTasksByDisplayOrder(tier1).map((t) => t.id),
+    ...sortTasksByDisplayOrder(tier2).map((t) => t.id),
+  ];
 }
 
 /** Target minutes for this plan window — paces far-deadline tasks to avoid burnout. */
@@ -186,16 +191,14 @@ function minToTime(min: number): string {
 
 /**
  * Pre-computes free study windows for the next `horizonDays` days.
- *
- * NOTE: All date/day arithmetic uses UTC to prevent timezone drift between
- * `date.toISOString()` (always UTC) and `date.getDay()` (local time).
- * Using `getUTCDate` / `getUTCDay` keeps both in sync.
+ * Uses local calendar dates (aligned with getPlanHorizon / todayDateString).
  */
 function computeAvailableSlots(
   weeklyHours: WeeklyHours | null,
   fixedSlots: FixedSlot[],
   bufferMin: number,
   horizonDays = 7,
+  referenceDate = new Date(),
 ): AvailableSlot[] {
   const DAY_KEYS: WeekDay[] = [
     "sunday","monday","tuesday","wednesday","thursday","friday","saturday",
@@ -206,15 +209,11 @@ function computeAvailableSlots(
   const MIN_SLOT_MIN = 30;
 
   const result: AvailableSlot[] = [];
-  const baseDate = new Date();
 
   for (let i = 0; i < horizonDays; i++) {
-    // Use UTC arithmetic so toISOString() and getUTCDay() stay consistent
-    const date = new Date(baseDate);
-    date.setUTCDate(date.getUTCDate() + i);
-
-    const dateStr = date.toISOString().split("T")[0];  // UTC date YYYY-MM-DD
-    const jsDay   = date.getUTCDay();                   // 0=Sun … 6=Sat (UTC)
+    const date = addDays(referenceDate, i);
+    const dateStr = format(date, "yyyy-MM-dd");
+    const jsDay   = date.getDay();
     const dayKey  = DAY_KEYS[jsDay];
 
     const hours = weeklyHours?.[dayKey];
@@ -226,7 +225,7 @@ function computeAvailableSlots(
 
     /**
      * DB day_of_week: 1=Sun … 7=Sat
-     * JS getUTCDay:   0=Sun … 6=Sat
+     * JS getDay:      0=Sun … 6=Sat
      * → dbDay = jsDay + 1
      */
     const busyIntervals = fixedSlots
@@ -271,6 +270,46 @@ function computeAvailableSlots(
   }
 
   return result;
+}
+
+/** Remove elapsed time from today's slots so the LLM only sees future availability. */
+function trimPastAvailableSlots(
+  slots: AvailableSlot[],
+  weeklyHours: WeeklyHours | null,
+  reference = new Date(),
+): AvailableSlot[] {
+  const todayStr = todayDateString(reference);
+  const nowMin   = reference.getHours() * 60 + reference.getMinutes();
+  const minStartFromClock = Math.ceil(nowMin / 15) * 15;
+
+  const DAY_KEYS: WeekDay[] = [
+    "sunday","monday","tuesday","wednesday","thursday","friday","saturday",
+  ];
+  const dayKey = DAY_KEYS[reference.getDay()];
+  const hours  = weeklyHours?.[dayKey];
+  const userStartMin = hours ? timeToMin(hours.start ?? "09:00") : 0;
+  const minStart     = Math.max(userStartMin, minStartFromClock);
+
+  return slots.flatMap((slot) => {
+    if (slot.date !== todayStr) return [slot];
+
+    const startMin = timeToMin(slot.start);
+    const endMin   = timeToMin(slot.end);
+    const effectiveStart = Math.max(startMin, minStart);
+
+    if (effectiveStart >= endMin) return [];
+
+    const duration = endMin - effectiveStart;
+    if (duration < 30) return [];
+
+    if (effectiveStart === startMin) return [slot];
+
+    return [{
+      ...slot,
+      start:        minToTime(effectiveStart),
+      duration_min: duration,
+    }];
+  });
 }
 
 // ── Post-processing: collision shifting + placement helpers ───────────────────
@@ -530,8 +569,8 @@ function autoFillByPriority(
   const ordered = [...tier1, ...tier2];
 
   const now      = new Date();
-  const todayStr = now.toISOString().split("T")[0];
-  const nowMin   = now.getUTCHours() * 60 + now.getUTCMinutes();
+  const todayStr = todayDateString(now);
+  const nowMin   = now.getHours() * 60 + now.getMinutes();
 
   for (const task of ordered) {
     const quota     = taskQuotas.get(task.id) ?? 0;
@@ -1112,7 +1151,7 @@ export async function generateSchedulePlan(
       .single(),
     supabase
       .from("tasks")
-      .select("id, title, course_name, due_date, estimated_duration, progress")
+      .select("id, title, course_name, due_date, estimated_duration, progress, user_priority_index")
       .eq("user_id", user.id)
       .neq("status", "archived")
       .lt("progress", 100)
@@ -1162,14 +1201,17 @@ export async function generateSchedulePlan(
   const buffer    = profileRow.buffer_time_minutes ?? 15;
   const [workMin] = workRest.split("/").map(Number);
 
-  const availableSlots = computeAvailableSlots(
+  const availableSlots = trimPastAvailableSlots(
+    computeAvailableSlots(
+      profileRow.weekly_hours,
+      fixedSlots,
+      buffer,
+      planDuration,
+    ),
     profileRow.weekly_hours,
-    fixedSlots,
-    buffer,
-    planDuration,
   );
 
-  const activeTasks = (tasks ?? []) as ActiveTask[];
+  const activeTasks = sortTasksByDisplayOrder((tasks ?? []) as ActiveTask[]);
   const proportionalQuotas = buildProportionalQuotas(activeTasks, cleanFrom, cleanTo);
 
   if (missedMinutesByTask.size > 0) {
@@ -1216,7 +1258,7 @@ Academic Background : ${userSettings.academic_background ?? "Not specified"}
 Work / Rest Rhythm  : ${workRest}
 Buffer Between Blocks: ${buffer} min
 Learning Style      : ${userSettings.learning_style ?? "mixed"}
-Scheduling Style    : ${schedulingStyle} (saved preference — applies to Tier 2 only)
+Scheduling Style    : ${schedulingStyle === "marathon" ? "sequential (strict priority order)" : "mixed (interleaved variety)"} — applies to Tier 2 after Tier 1 is satisfied
 Hobbies & Routine   : ${userSettings.hobbies_and_breaks ?? "None provided"}
 
 ═══════════════════════════════════════
@@ -1254,6 +1296,14 @@ unless the deadline is imminent or the task is Tier 1 critical.
 ${formatTaskQuotas(activeTasks, proportionalQuotas)}
 
 ═══════════════════════════════════════
+USER TASK PRIORITY ORDER (respect strictly when scheduling style is sequential/marathon)
+═══════════════════════════════════════
+${priorityTaskOrder(activeTasks).map((id, i) => {
+  const t = activeTasks.find((x) => x.id === id);
+  return t ? `  ${i + 1}. id=${id} | "${t.title}"` : "";
+}).filter(Boolean).join("\n") || "  (none)"}
+
+═══════════════════════════════════════
 DEADLINE ENFORCEMENT — MANDATORY
 ═══════════════════════════════════════
 Tasks with deadlines inside this window MUST receive their full plan target before due date.
@@ -1263,9 +1313,9 @@ ${formatDeadlineConstraints(activeTasks, horizonEnd, proportionalQuotas)}
 PRIORITY & PACING RULES — MANDATORY
 ═══════════════════════════════════════
 Rule 1: You MUST allocate 100% of the plan target for ALL Tier 1 tasks BEFORE assigning any time to Tier 2 tasks.
-Rule 2: For Tier 2 tasks, strictly follow the user's saved scheduling style: '${schedulingStyle}'.
-  - If 'marathon': focus entirely on completing the first Tier 2 task before moving to the next.
-  - If 'interleaved': distribute the remaining available time evenly across multiple Tier 2 tasks to maintain variety.
+Rule 2: SCHEDULING STYLE — '${schedulingStyle}':
+  - If 'marathon' (SEQUENTIAL / STRICT PRIORITY): You MUST schedule tasks strictly in the USER TASK PRIORITY ORDER above. Complete each task's plan target before starting the next. Do NOT jump between different tasks.
+  - If 'interleaved' (MIXED / VARIED): You MAY alternate between Tier 2 tasks to keep study sessions diverse, while still respecting Tier 1 deadlines first.
 Rule 3: Never schedule any block after a task's due date.
 Rule 4: Respect proportional pacing — do NOT schedule more than each task's "Plan target" this window.
 
@@ -1317,7 +1367,7 @@ CONFLICT (time is insufficient — max 3 options, titles 1-4 words):
             "SUPREME DIRECTIVE: The user's custom text prompt overrides ALL other rules (including Tier 1 priorities). " +
             "If the user asks to keep a specific day or time range free, you MUST NOT schedule blocks there and MUST define those times in blackout_windows. " +
             "CRITICAL: Schedule 100% of Tier 1 (72h deadline) plan targets before ANY Tier 2 task — except where blackouts forbid it. " +
-            "For Tier 2, honor the user's saved scheduling_style (marathon or interleaved). " +
+            "For Tier 2, honor scheduling_style: 'marathon' = strict sequential priority (never interleave tasks); 'interleaved' = mixed variety across tasks. " +
             "Respect each task's proportional plan target — do NOT over-schedule far-deadline tasks in one window. " +
             "Never place blocks after a task's due date.",
         },
@@ -1808,10 +1858,13 @@ export async function createManualBlock(data: {
   scheduled_date: string;
   start_time:     string;
   end_time:       string;
+  kind?:          "manual" | "one_off";
 }) {
   const supabase = await createClient();
   const { data: { user }, error: authError } = await supabase.auth.getUser();
   if (authError || !user) return { success: false as const, error: "Not authenticated" };
+
+  const blockKind = data.kind ?? "manual";
 
   const { data: inserted, error } = await supabase
     .from("scheduled_blocks")
@@ -1823,7 +1876,7 @@ export async function createManualBlock(data: {
       start_time:     data.start_time,
       end_time:       data.end_time,
       is_locked:      true,
-      kind:           "manual",
+      kind:           blockKind,
     })
     .select("id")
     .single();
@@ -1953,7 +2006,7 @@ export async function loadPlannerWeekData(
       .order("start_time"),
     supabase
       .from("tasks")
-      .select("id, title, due_date, estimated_duration, course_name, status, progress")
+      .select("id, title, due_date, estimated_duration, course_name, status, progress, user_priority_index")
       .eq("user_id", user.id)
       .in("status", ["pending", "in_progress", "completed"]),
   ]);
@@ -2051,7 +2104,7 @@ export async function loadPlannerWeekData(
     completedGoalKeys,
     sessionLoggedKeys,
     fullyCompletedGoalKeys,
-    tasks:       (taskRows ?? []) as unknown as Task[],
+    tasks:       sortTasksByDisplayOrder((taskRows ?? []) as unknown as Task[]),
     goalRecords,
   };
 }

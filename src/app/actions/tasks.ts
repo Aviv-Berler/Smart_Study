@@ -2,6 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { createClient } from "@/utils/supabase/server";
+import { sortTasksByDisplayOrder } from "@/lib/task-sort";
 
 export interface AddTaskInput {
   title: string;
@@ -64,7 +65,41 @@ export async function updateTaskProgress(taskId: string, progress: number) {
   revalidatePath("/", "layout");
   revalidatePath("/tasks");
   revalidatePath("/manage");
-  return { success: true };
+  return { success: true as const };
+}
+
+/** Update estimated time to complete (minutes). Pass null to clear. */
+export async function updateTaskEstimatedDuration(
+  taskId: string,
+  estimatedDuration: number | null,
+) {
+  const supabase = await createClient();
+  const {
+    data: { user },
+    error: authError,
+  } = await supabase.auth.getUser();
+  if (authError || !user) return { error: "Not authenticated" };
+
+  if (estimatedDuration != null && estimatedDuration <= 0) {
+    return { error: "Estimated time must be greater than 0." };
+  }
+
+  const { error } = await supabase
+    .from("tasks")
+    .update({
+      estimated_duration: estimatedDuration,
+      updated_at:         new Date().toISOString(),
+    })
+    .eq("id", taskId)
+    .eq("user_id", user.id);
+
+  if (error) return { error: error.message };
+
+  revalidatePath("/", "layout");
+  revalidatePath("/tasks");
+  revalidatePath("/manage");
+  revalidatePath("/planner");
+  return { success: true as const };
 }
 
 /** Update a task's due date (deadline). Pass null to clear. */
@@ -154,10 +189,9 @@ export async function getTasks() {
     .from("tasks")
     .select("*")
     .eq("user_id", user.id)
-    .in("status", ["pending", "in_progress"])
-    .order("due_date", { ascending: true, nullsFirst: false });
+    .in("status", ["pending", "in_progress"]);
 
-  return data ?? [];
+  return sortTasksByDisplayOrder(data ?? []);
 }
 
 /** All non-archived tasks — used for manage/tasks pages (shows completed too) */
@@ -173,9 +207,57 @@ export async function getAllTasks() {
     .from("tasks")
     .select("*")
     .eq("user_id", user.id)
-    .neq("status", "archived")
-    .order("due_date", { ascending: true, nullsFirst: false });
+    .neq("status", "archived");
 
-  return data ?? [];
+  return sortTasksByDisplayOrder(data ?? []);
+}
+
+/** Persist drag-and-drop task order from Manage → Edit Priority */
+export async function updateTaskPriorityOrder(orderedTaskIds: string[]) {
+  const supabase = await createClient();
+  const {
+    data: { user },
+    error: authError,
+  } = await supabase.auth.getUser();
+  if (authError || !user) return { error: "Not authenticated" };
+
+  const updates = orderedTaskIds.map((id, index) =>
+    supabase
+      .from("tasks")
+      .update({ user_priority_index: index, updated_at: new Date().toISOString() })
+      .eq("id", id)
+      .eq("user_id", user.id),
+  );
+
+  const results = await Promise.all(updates);
+  const failed = results.find((r) => r.error);
+  if (failed?.error) return { error: failed.error.message };
+
+  revalidatePath("/", "layout");
+  revalidatePath("/manage");
+  revalidatePath("/planner");
+  return { success: true as const };
+}
+
+/** Clear custom order — revert to default due-date sorting */
+export async function resetTaskPriorities() {
+  const supabase = await createClient();
+  const {
+    data: { user },
+    error: authError,
+  } = await supabase.auth.getUser();
+  if (authError || !user) return { error: "Not authenticated" };
+
+  const { error } = await supabase
+    .from("tasks")
+    .update({ user_priority_index: null, updated_at: new Date().toISOString() })
+    .eq("user_id", user.id);
+
+  if (error) return { error: error.message };
+
+  revalidatePath("/", "layout");
+  revalidatePath("/manage");
+  revalidatePath("/planner");
+  return { success: true as const };
 }
 

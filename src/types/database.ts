@@ -57,6 +57,8 @@ export interface Task {
   /** 0–100 completion percentage. Added by ai_planner_setup.sql migration. */
   progress: number;
   source: string;
+  /** User-defined order from Manage → Edit Priority (lower = higher priority) */
+  user_priority_index: number | null;
   created_at: string;
   updated_at: string;
 }
@@ -126,7 +128,7 @@ export interface DailyGoalTableRow {
 }
 
 /** AI-generated (or user-created) study block */
-export type ScheduledBlockKind = "ai" | "manual";
+export type ScheduledBlockKind = "ai" | "manual" | "one_off";
 
 export interface ScheduledBlock {
   id: string;
@@ -151,7 +153,7 @@ export interface ScheduledBlock {
  */
 export interface CalendarBlock {
   id: string;
-  kind: "ai" | "manual" | "fixed";
+  kind: "ai" | "manual" | "fixed" | "one_off";
   title: string;
   scheduled_date: string;  // "YYYY-MM-DD"
   start_time: string;      // "HH:MM"

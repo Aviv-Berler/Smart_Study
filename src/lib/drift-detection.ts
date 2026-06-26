@@ -14,7 +14,7 @@ export interface DriftBlockLike {
   start_time: string;
   end_time: string;
   is_locked: boolean;
-  kind: "ai" | "manual" | "fixed";
+  kind: "ai" | "manual" | "fixed" | "one_off";
 }
 
 export interface DriftTaskLike {
@@ -161,15 +161,13 @@ export type BlockInteractivity = "readonly" | "drag-only" | "full";
  */
 export function getBlockInteractivity(
   block: DriftBlockLike,
-  today: string,
-  completedGoals: Set<string>,
+  _today: string,
+  _completedGoals: Set<string>,
 ): BlockInteractivity {
   if (block.kind === "fixed") return "readonly";
-  if (block.kind !== "ai" && block.kind !== "manual") return "readonly";
-
-  if (block.scheduled_date >= today) return "full";
-
-  if (isMissedBlock(block, today, completedGoals)) return "drag-only";
+  if (block.kind === "ai" || block.kind === "manual" || block.kind === "one_off") {
+    return "full";
+  }
   return "readonly";
 }
 

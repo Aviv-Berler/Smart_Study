@@ -23,9 +23,12 @@ import {
   deleteScheduleSlot,
   deleteCourse,
 } from "@/app/actions/courses";
-import { deleteTask, updateTaskDueDate, updateTaskProgress } from "@/app/actions/tasks";
+import { deleteTask, updateTaskDueDate, updateTaskEstimatedDuration, updateTaskProgress, resetTaskPriorities } from "@/app/actions/tasks";
+import { sortTasksByDisplayOrder } from "@/lib/task-sort";
 import { AddCourseForm } from "@/components/forms/add-course-form";
 import { AddTaskForm } from "@/components/forms/add-task-form";
+import { TaskPriorityList } from "@/components/manage/task-priority-list";
+import { usePlannerSchedule } from "@/components/providers/planner-schedule-provider";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -418,6 +421,101 @@ function ProgressWidget({
   );
 }
 
+// ─── Inline ETA (estimated duration) widget ─────────────────────────────────
+function DurationWidget({
+  taskId,
+  initial,
+  onSaved,
+}: {
+  taskId: string;
+  initial: number | null;
+  onSaved: (next: number | null) => void;
+}) {
+  const router = useRouter();
+  const { patchTask } = usePlannerSchedule();
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(initial != null ? String(initial) : "");
+  const [saving, startSave] = useTransition();
+
+  const save = () => {
+    const trimmed = draft.trim();
+    const next = trimmed === "" ? null : Math.round(Number(trimmed));
+    if (trimmed !== "" && (!Number.isFinite(next) || next! <= 0)) return;
+
+    patchTask(taskId, { estimated_duration: next });
+    onSaved(next);
+
+    startSave(async () => {
+      const result = await updateTaskEstimatedDuration(taskId, next);
+      if (result.error) return;
+      router.refresh();
+      setEditing(false);
+    });
+  };
+
+  if (editing) {
+    return (
+      <div className="flex shrink-0 items-center gap-1">
+        <input
+          type="number"
+          min={1}
+          step={15}
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          disabled={saving}
+          placeholder="min"
+          className="h-7 w-16 rounded border border-input bg-background px-1.5 text-center text-xs font-mono focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          onKeyDown={(e) => {
+            if (e.key === "Enter") save();
+            if (e.key === "Escape") setEditing(false);
+          }}
+          autoFocus
+        />
+        <button
+          type="button"
+          onClick={save}
+          disabled={saving}
+          className="flex h-7 w-7 items-center justify-center rounded border border-primary bg-primary/10 text-primary hover:bg-primary/20 transition-colors disabled:opacity-50"
+        >
+          {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-3.5 w-3.5" />}
+        </button>
+        <button
+          type="button"
+          onClick={() => setEditing(false)}
+          disabled={saving}
+          className="flex h-7 w-7 items-center justify-center rounded border border-border text-muted-foreground hover:text-foreground transition-colors"
+        >
+          <X className="h-3.5 w-3.5" />
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex shrink-0 items-center gap-1">
+      <span className="flex items-center gap-1 text-xs text-muted-foreground">
+        <Clock className="h-3 w-3" />
+        {initial != null ? (
+          <LtrIsolate>{formatMinutes(initial)}</LtrIsolate>
+        ) : (
+          <span>—</span>
+        )}
+      </span>
+      <button
+        type="button"
+        onClick={() => {
+          setDraft(initial != null ? String(initial) : "");
+          setEditing(true);
+        }}
+        className="p-0.5 text-muted-foreground/40 hover:text-primary transition-colors"
+        title="Edit estimated time"
+      >
+        <Pencil className="h-3 w-3" />
+      </button>
+    </div>
+  );
+}
+
 // ─── Inline deadline widget ───────────────────────────────────────────────────
 function DeadlineWidget({
   taskId,
@@ -554,11 +652,13 @@ function TaskRow({
   onDelete,
   onProgressChange,
   onDueDateChange,
+  onEstimatedDurationChange,
 }: {
   task: Task;
   onDelete: (id: string) => void;
   onProgressChange?: (id: string, progress: number) => void;
   onDueDateChange?: (id: string, dueDate: string | null) => void;
+  onEstimatedDurationChange?: (id: string, minutes: number | null) => void;
 }) {
   const router = useRouter();
   const { translate, locale } = useLanguage();
@@ -602,12 +702,11 @@ function TaskRow({
 
         {/* Meta + delete */}
         <div className="flex shrink-0 items-center gap-2">
-          {task.estimated_duration && (
-            <span className="flex items-center gap-1 text-xs text-muted-foreground">
-              <Clock className="h-3 w-3" />
-              <LtrIsolate>{formatMinutes(task.estimated_duration)}</LtrIsolate>
-            </span>
-          )}
+          <DurationWidget
+            taskId={task.id}
+            initial={task.estimated_duration}
+            onSaved={(next) => onEstimatedDurationChange?.(task.id, next)}
+          />
           <DeadlineWidget
             taskId={task.id}
             initial={task.due_date}
@@ -649,11 +748,18 @@ export function ManageClient({
 }: Props) {
   const { translate } = useLanguage();
   const onboarding = useOnboardingOptional();
+  const { patchTask, ensureLoaded } = usePlannerSchedule();
   const [courses, setCourses] = useState<CourseWithSchedules[]>(initialCourses);
   const router = useRouter();
   const [tasks, setTasks] = useState<Task[]>(initialTasks);
   const [courseOptions, setCourseOptions] = useState(initialCourseOptions);
   const [activeTab, setActiveTab] = useState<"course" | "task">("task");
+  const [priorityEditMode, setPriorityEditMode] = useState(false);
+  const [resettingPriority, startResetPriority] = useTransition();
+
+  useEffect(() => {
+    void ensureLoaded();
+  }, [ensureLoaded]);
 
   useEffect(() => {
     setCourses(initialCourses);
@@ -703,7 +809,30 @@ export function ManageClient({
   const handleTaskDueDate = (id: string, due_date: string | null) =>
     setTasks((prev) => prev.map((t) => (t.id === id ? { ...t, due_date } : t)));
 
-  const activeTasks    = tasks.filter((t) => (t.progress ?? 0) < 100);
+  const handleTaskEstimatedDuration = (id: string, estimated_duration: number | null) =>
+    setTasks((prev) => prev.map((t) => (t.id === id ? { ...t, estimated_duration } : t)));
+
+  const handleTaskReorder = (next: Task[]) => {
+    setTasks((prev) => {
+      const byId = new Map(next.map((t) => [t.id, t]));
+      const rest = prev.filter((t) => !byId.has(t.id));
+      return [...next, ...rest];
+    });
+    next.forEach((t, i) => patchTask(t.id, { user_priority_index: i }));
+  };
+
+  const handleResetPriority = () => {
+    startResetPriority(async () => {
+      await resetTaskPriorities();
+      setTasks((prev) => {
+        prev.forEach((t) => patchTask(t.id, { user_priority_index: null }));
+        return prev.map((t) => ({ ...t, user_priority_index: null }));
+      });
+      router.refresh();
+    });
+  };
+
+  const activeTasks    = sortTasksByDisplayOrder(tasks.filter((t) => (t.progress ?? 0) < 100));
   const completedTasks = tasks.filter((t) => (t.progress ?? 0) >= 100);
 
   return (
@@ -744,15 +873,43 @@ export function ManageClient({
 
       {/* ── 2. Tasks (Active + Completed) ────────────────────────────── */}
       <section className="space-y-3">
-        <div className="flex items-center gap-2">
-          <ListChecks className="h-5 w-5 text-primary" />
-          <h2 className="text-lg font-semibold">{translate("activeTasks")}</h2>
-          <span className="text-sm text-muted-foreground">
-            ({activeTasks.length})
-          </span>
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <ListChecks className="h-5 w-5 text-primary" />
+            <h2 className="text-lg font-semibold">{translate("activeTasks")}</h2>
+            <span className="text-sm text-muted-foreground">
+              ({activeTasks.length})
+            </span>
+          </div>
+          <div className="flex items-center gap-2">
+            {priorityEditMode && (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={resettingPriority}
+                onClick={handleResetPriority}
+              >
+                {resettingPriority ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : null}
+                Reset Order
+              </Button>
+            )}
+            <Button
+              type="button"
+              variant={priorityEditMode ? "default" : "outline"}
+              size="sm"
+              onClick={() => setPriorityEditMode((v) => !v)}
+            >
+              {priorityEditMode ? "Done" : "Edit Priority"}
+            </Button>
+          </div>
         </div>
 
-        {activeTasks.length === 0 ? (
+        {priorityEditMode ? (
+          <TaskPriorityList tasks={activeTasks} onReorder={handleTaskReorder} />
+        ) : activeTasks.length === 0 ? (
           <Card className="border-dashed">
             <CardContent className="flex flex-col items-center gap-2 py-10 text-center">
               <ListChecks className="h-8 w-8 text-muted-foreground" />
@@ -770,6 +927,7 @@ export function ManageClient({
                 onDelete={handleTaskDelete}
                 onProgressChange={handleTaskProgress}
                 onDueDateChange={handleTaskDueDate}
+                onEstimatedDurationChange={handleTaskEstimatedDuration}
               />
             ))}
           </div>
@@ -792,6 +950,7 @@ export function ManageClient({
                 onDelete={handleTaskDelete}
                 onProgressChange={handleTaskProgress}
                 onDueDateChange={handleTaskDueDate}
+                onEstimatedDurationChange={handleTaskEstimatedDuration}
               />
             ))}
           </div>
