@@ -43,6 +43,8 @@ export interface PlanningPreferencesInput {
   learning_style?: LearningStyle | null;
   scheduling_style?: SchedulingStyle | null;
   hobbies_and_breaks?: string | null;
+  semester_start_date?: string | null;
+  semester_end_date?: string | null;
 }
 
 export async function savePlanningPreferences(data: PlanningPreferencesInput) {

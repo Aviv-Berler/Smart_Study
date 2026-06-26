@@ -8,7 +8,7 @@ import {
 import {
   CalendarDays, Sparkles,
   Loader2, CheckCircle2, AlertTriangle, Zap, RotateCcw, Trash2, Pencil, Plus,
-  ChevronLeft, ChevronRight, GripVertical, Menu,
+  ChevronLeft, ChevronRight, GripVertical, Menu, GraduationCap,
 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -26,6 +26,9 @@ import {
   clearPlannerRange,
   createManualBlock,
   loadPlannerWeekData,
+  cancelVirtualClassInstance,
+  moveVirtualClassInstance,
+  revertClassOverride,
 } from "@/app/actions/planner";
 import { useLanguage } from "@/components/providers/language-provider";
 import { useSidebar } from "@/components/layout/sidebar-context";
@@ -46,6 +49,10 @@ import {
 import { isolateLtr } from "@/lib/bidi";
 import { cn } from "@/lib/utils";
 import { getPlanHorizon, getWeekBounds, parseLocalDate, toDateKey, normalizeTimeKey } from "@/lib/plan-horizon";
+import {
+  isVirtualClassBlockId,
+  parseVirtualClassBlockId,
+} from "@/lib/schedule-merge";
 import {
   getBlockInteractivity,
   isMissedBlock,
@@ -98,12 +105,18 @@ function calendarBlocksEqual(a: CalendarBlock[], b: CalendarBlock[]): boolean {
 }
 
 // ── Block colour logic ─────────────────────────────────────────────────────────
+function isVirtualClassBlock(b: CalendarBlock): boolean {
+  return b.is_virtual === true || (b.kind === "fixed" && isVirtualClassBlockId(b.id));
+}
+
 function blockClass(b: CalendarBlock, missed = false): string {
   if (missed) {
     return "bg-red-500/15 text-red-900 dark:text-red-200 ring-2 ring-red-500/55";
   }
   if (b.kind === "fixed")
-    return "bg-blue-500/20 text-blue-700 dark:text-blue-300 ring-1 ring-blue-500/40";
+    return "bg-indigo-500/20 text-indigo-900 dark:text-indigo-200 ring-1 ring-indigo-500/45";
+  if (b.kind === "class_override")
+    return "bg-indigo-600/25 text-indigo-950 dark:text-indigo-100 ring-1 ring-indigo-600/50";
   if (b.kind === "one_off")
     return "bg-violet-500/20 text-violet-800 dark:text-violet-300 ring-1 ring-violet-500/40";
   if (b.is_locked)
@@ -786,6 +799,9 @@ function CalendarGrid({
                                 className="h-2.5 w-2.5 shrink-0 text-red-600 dark:text-red-400"
                                 aria-hidden
                               />
+                            )}
+                            {(block.kind === "fixed" || block.kind === "class_override") && (
+                              <GraduationCap className="h-2.5 w-2.5 shrink-0 opacity-70" aria-hidden />
                             )}
                             <AutoDirText className="block truncate">{block.title}</AutoDirText>
                           </div>
@@ -1494,6 +1510,63 @@ export function PlannerCalendar({
     newEnd: string,
   ) => {
     const original = localBlocks.find(b => b.id === blockId);
+    if (!original) return;
+
+    if (isVirtualClassBlock(original)) {
+      const parsed = parseVirtualClassBlockId(blockId);
+      const sourceScheduleId = original.source_schedule_id ?? parsed?.scheduleId;
+      const originalDate     = parsed?.date ?? original.scheduled_date;
+      if (!sourceScheduleId) return;
+
+      setLocalBlocks(prev => prev.filter(b => b.id !== blockId).concat({
+        id:                 `temp-override-${blockId}`,
+        kind:               "class_override",
+        title:              original.title,
+        scheduled_date:     newDate,
+        start_time:         newStart,
+        end_time:           newEnd,
+        is_locked:          true,
+        task_id:            null,
+        source_schedule_id: sourceScheduleId,
+        is_virtual:         false,
+      }));
+
+      onboarding?.signalTourAction("block-dragged");
+
+      const result = await moveVirtualClassInstance({
+        sourceScheduleId,
+        originalDate,
+        scheduledDate: newDate,
+        startTime:     newStart,
+        endTime:       newEnd,
+        title:         original.title,
+      });
+
+      if (!result.success) {
+        toast.error(`Could not move class: ${result.error}`);
+        setLocalBlocks(prev => prev.filter(b => b.id !== `temp-override-${blockId}`).concat(original));
+        return;
+      }
+
+      skipSsrSyncRef.current = true;
+      await syncAfterPlannerMutation();
+      return;
+    }
+
+    if (original.kind === "class_override") {
+      setLocalBlocks(prev => prev.map(b =>
+        b.id === blockId
+          ? { ...b, scheduled_date: newDate, start_time: newStart, end_time: newEnd }
+          : b
+      ));
+      const result = await updateBlockTime(blockId, newStart, newEnd, newDate);
+      if (!result.success) {
+        toast.error(`Could not save class move: ${result.error}`);
+        setLocalBlocks(prev => prev.map(b => b.id === blockId ? original : b));
+      }
+      return;
+    }
+
     setLocalBlocks(prev => prev.map(b =>
       b.id === blockId
         ? { ...b, scheduled_date: newDate, start_time: newStart, end_time: newEnd }
@@ -1523,6 +1596,32 @@ export function PlannerCalendar({
   const handleBlockResize = async (blockId: string, newEnd: string) => {
     const original = localBlocks.find(b => b.id === blockId);
     if (!original) return;
+
+    if (isVirtualClassBlock(original)) {
+      const parsed = parseVirtualClassBlockId(blockId);
+      const sourceScheduleId = original.source_schedule_id ?? parsed?.scheduleId;
+      const originalDate     = parsed?.date ?? original.scheduled_date;
+      if (!sourceScheduleId) return;
+
+      const result = await moveVirtualClassInstance({
+        sourceScheduleId,
+        originalDate,
+        scheduledDate: original.scheduled_date,
+        startTime:     original.start_time.slice(0, 5),
+        endTime:       newEnd,
+        title:         original.title,
+      });
+
+      if (!result.success) {
+        toast.error(`Could not resize class: ${result.error}`);
+        return;
+      }
+
+      skipSsrSyncRef.current = true;
+      await syncAfterPlannerMutation();
+      return;
+    }
+
     setLocalBlocks(prev => prev.map(b =>
       b.id === blockId ? { ...b, end_time: newEnd } : b
     ));
@@ -1583,6 +1682,47 @@ export function PlannerCalendar({
     newDate: string,
   ) => {
     const original = localBlocks.find(b => b.id === blockId);
+    if (!original) return;
+
+    if (isVirtualClassBlock(original)) {
+      const parsed = parseVirtualClassBlockId(blockId);
+      const sourceScheduleId = original.source_schedule_id ?? parsed?.scheduleId;
+      const originalDate     = parsed?.date ?? original.scheduled_date;
+      if (!sourceScheduleId) return;
+
+      const result = await moveVirtualClassInstance({
+        sourceScheduleId,
+        originalDate,
+        scheduledDate: newDate,
+        startTime:     newStart,
+        endTime:       newEnd,
+        title:         original.title,
+      });
+
+      if (!result.success) {
+        toast.error(`Could not edit class: ${result.error}`);
+        return;
+      }
+
+      skipSsrSyncRef.current = true;
+      await syncAfterPlannerMutation();
+      return;
+    }
+
+    if (original.kind === "class_override") {
+      setLocalBlocks(prev => prev.map(b =>
+        b.id === blockId
+          ? { ...b, scheduled_date: newDate, start_time: newStart, end_time: newEnd }
+          : b
+      ));
+      const result = await updateBlockTime(blockId, newStart, newEnd, newDate);
+      if (!result.success) {
+        toast.error(`Could not save edit: ${result.error}`);
+        setLocalBlocks(prev => prev.map(b => b.id === blockId ? original : b));
+      }
+      return;
+    }
+
     setLocalBlocks(prev => prev.map(b =>
       b.id === blockId
         ? { ...b, scheduled_date: newDate, start_time: newStart, end_time: newEnd }
@@ -1610,6 +1750,46 @@ export function PlannerCalendar({
   const handleBlockDelete = async (blockId: string) => {
     const original = localBlocks.find(b => b.id === blockId);
     if (!original) return;
+
+    if (isVirtualClassBlock(original)) {
+      const parsed = parseVirtualClassBlockId(blockId);
+      const sourceScheduleId = original.source_schedule_id ?? parsed?.scheduleId;
+      const instanceDate     = parsed?.date ?? original.scheduled_date;
+      if (!sourceScheduleId) return;
+
+      setLocalBlocks(prev => prev.filter(b => b.id !== blockId));
+
+      const result = await cancelVirtualClassInstance(
+        sourceScheduleId,
+        instanceDate,
+        original.title,
+      );
+
+      if (!result.success) {
+        toast.error(`Could not cancel class: ${result.error}`);
+        setLocalBlocks(prev => [...prev, original]);
+        return;
+      }
+
+      skipSsrSyncRef.current = true;
+      await syncAfterPlannerMutation();
+      return;
+    }
+
+    if (original.kind === "class_override") {
+      setLocalBlocks(prev => prev.filter(b => b.id !== blockId));
+
+      const result = await revertClassOverride(blockId);
+      if (!result.success) {
+        toast.error(`Could not remove class override: ${result.error}`);
+        setLocalBlocks(prev => [...prev, original]);
+        return;
+      }
+
+      skipSsrSyncRef.current = true;
+      await syncAfterPlannerMutation();
+      return;
+    }
 
     const persisted = isPersistedBlockId(blockId);
 

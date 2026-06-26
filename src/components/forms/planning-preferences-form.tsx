@@ -144,6 +144,8 @@ function ReadSummary({
 
 interface DraftState {
   academic_background: string;
+  semester_start_date: string;
+  semester_end_date: string;
   weekly_hours: WeeklyHours;
   work_rest_interval: string;
   buffer_time_minutes: number;
@@ -155,6 +157,8 @@ interface DraftState {
 function buildDraft(profile: Profile): DraftState {
   return {
     academic_background: profile.academic_background ?? "",
+    semester_start_date: profile.semester_start_date ?? "",
+    semester_end_date:   profile.semester_end_date ?? "",
     weekly_hours: profile.weekly_hours ?? DEFAULT_WEEKLY_HOURS,
     work_rest_interval: profile.work_rest_interval ?? "50/10",
     buffer_time_minutes: profile.buffer_time_minutes ?? 15,
@@ -209,6 +213,8 @@ function EditForm({
     startSave(async () => {
       const res = await savePlanningPreferences({
         academic_background: draft.academic_background.trim() || null,
+        semester_start_date: draft.semester_start_date.trim() || null,
+        semester_end_date:   draft.semester_end_date.trim() || null,
         weekly_hours: draft.weekly_hours,
         work_rest_interval: draft.work_rest_interval,
         buffer_time_minutes: draft.buffer_time_minutes,
@@ -237,9 +243,30 @@ function EditForm({
           placeholder={translate("academicBgPlaceholder")}
           value={draft.academic_background}
           onChange={(e) => setField("academic_background", e.target.value)}
-          disabled={saving}
           dir="auto"
         />
+      </div>
+
+      {/* Semester window — recurring classes render only within this range */}
+      <div className="grid grid-cols-2 gap-3">
+        <div className="space-y-1.5">
+          <Label htmlFor="semester-start">Semester start</Label>
+          <Input
+            id="semester-start"
+            type="date"
+            value={draft.semester_start_date}
+            onChange={(e) => setField("semester_start_date", e.target.value)}
+          />
+        </div>
+        <div className="space-y-1.5">
+          <Label htmlFor="semester-end">Semester end</Label>
+          <Input
+            id="semester-end"
+            type="date"
+            value={draft.semester_end_date}
+            onChange={(e) => setField("semester_end_date", e.target.value)}
+          />
+        </div>
       </div>
 
       {/* Weekly availability grid */}

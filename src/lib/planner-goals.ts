@@ -72,7 +72,7 @@ export function buildTimelineBlocks(
 ): CalendarBlock[] {
   if (!hasDrafts) return blocks;
   return blocks.filter((b) => {
-    if (b.kind === "fixed" || b.kind === "one_off") return true;
+    if (b.kind === "fixed" || b.kind === "one_off" || b.kind === "class_override") return true;
     if (!b.is_locked) return true;
     if (toDateKey(b.scheduled_date) >= todayStr) return true;
     return isMissedBlock(b, todayStr, completedGoals);

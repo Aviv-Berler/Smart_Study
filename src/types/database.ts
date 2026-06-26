@@ -39,6 +39,10 @@ export interface Profile {
   /** Hobbies, sport, or routine constraints the AI should respect */
   hobbies_and_breaks: string | null;
 
+  /** Inclusive semester window — recurring class rules render only inside this range */
+  semester_start_date: string | null;
+  semester_end_date:   string | null;
+
   created_at: string;
   updated_at: string;
 }
@@ -128,7 +132,12 @@ export interface DailyGoalTableRow {
 }
 
 /** AI-generated (or user-created) study block */
-export type ScheduledBlockKind = "ai" | "manual" | "one_off";
+export type ScheduledBlockKind =
+  | "ai"
+  | "manual"
+  | "one_off"
+  | "class_override"
+  | "class_cancelled";
 
 export interface ScheduledBlock {
   id: string;
@@ -139,27 +148,39 @@ export interface ScheduledBlock {
   start_time: string;       // "HH:MM"
   end_time: string;         // "HH:MM"
   is_locked: boolean;
-  /** 'ai' = planner-generated; 'manual' = user-created (immune to AI wipe) */
   kind: ScheduledBlockKind;
+  /** Recurring rule this override/cancellation belongs to */
+  source_schedule_id: string | null;
   created_at: string;
   updated_at: string;
 }
 
 /**
  * Unified calendar event used by the Planner UI.
- * kind="ai"     → AI-generated study block (orange = draft, green = approved)
- * kind="manual" → User-created block via BlockFormModal (immune to AI wipe)
- * kind="fixed"  → Recurring course slot expanded from the schedules table (blue)
+ * kind="fixed"           → Virtual recurring class (from schedules, not in DB)
+ * kind="class_override"  → User-moved/resized class instance (physical)
+ * kind="class_cancelled" → Suppresses virtual instance (physical, not rendered)
  */
 export interface CalendarBlock {
   id: string;
-  kind: "ai" | "manual" | "fixed" | "one_off";
+  kind:
+    | "ai"
+    | "manual"
+    | "fixed"
+    | "one_off"
+    | "class_override"
+    | "class_cancelled";
   title: string;
   scheduled_date: string;  // "YYYY-MM-DD"
   start_time: string;      // "HH:MM"
   end_time: string;        // "HH:MM"
-  is_locked: boolean;      // false = AI draft, true = AI approved or fixed slot
+  is_locked: boolean;      // false = AI draft, true = AI approved or class
   task_id?: string | null;
+  /** Recurring schedule rule — set on virtual, override, and cancel rows */
+  source_schedule_id?: string | null;
+  /** True for generated virtual class blocks (not persisted) */
+  is_virtual?: boolean;
+  schedule_type?: ScheduleType;
 }
 
 // ── Planner V2 types ──────────────────────────────────────────────────────────

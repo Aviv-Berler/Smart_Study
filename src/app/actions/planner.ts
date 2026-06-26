@@ -9,6 +9,12 @@ import { createClient } from "@/utils/supabase/server";
 import { parseGroqApiKeys } from "@/lib/groq";
 import { getHorizonDateStrings, getPlanHorizon, getHistoryStart, toDateKey, normalizeTimeKey } from "@/lib/plan-horizon";
 import { sortTasksByDisplayOrder } from "@/lib/task-sort";
+import {
+  buildClassBusyByDate,
+  mergeClassBlocksForWeek,
+  type ClassInstanceRow,
+  type ScheduleRule,
+} from "@/lib/schedule-merge";
 import { isolateLtr } from "@/lib/bidi";
 import {
   buildCompletedGoalKeys,
@@ -59,12 +65,16 @@ interface LLMConflict {
 type LLMResponse = LLMSuccess | LLMConflict;
 
 interface FixedSlot {
-  day_of_week: number;  // DB: 1=Sun … 7=Sat
-  start_time: string;   // "HH:MM:SS" or "HH:MM" from Postgres TIME
-  duration: number | null;
-  type: string;
-  course_name: string | null;
+  id?:            string;
+  day_of_week:    number;  // DB: 1=Sun … 7=Sat
+  start_time:     string;
+  duration:       number | null;
+  type:           string;
+  course_name:    string | null;
 }
+
+/** Date-keyed busy intervals (minutes) for recurring / overridden classes */
+type ClassBusyByDate = Map<string, { start: number; end: number }[]>;
 
 interface ActiveTask {
   id: string;
@@ -195,7 +205,7 @@ function minToTime(min: number): string {
  */
 function computeAvailableSlots(
   weeklyHours: WeeklyHours | null,
-  fixedSlots: FixedSlot[],
+  classBusyByDate: ClassBusyByDate,
   bufferMin: number,
   horizonDays = 7,
   referenceDate = new Date(),
@@ -228,15 +238,11 @@ function computeAvailableSlots(
      * JS getDay:      0=Sun … 6=Sat
      * → dbDay = jsDay + 1
      */
-    const busyIntervals = fixedSlots
-      .filter(s => s.day_of_week === jsDay + 1)
-      .map(s => {
-        // Postgres TIME comes back as "HH:MM:SS" — take first 5 chars
-        const start = timeToMin(s.start_time.slice(0, 5));
-        const end   = start + (s.duration ?? 90);
-        // Expand each fixed block by the buffer on both sides
-        return { start: start - bufferMin, end: end + bufferMin };
-      })
+    const busyIntervals = (classBusyByDate.get(dateStr) ?? [])
+      .map((b) => ({
+        start: b.start - bufferMin,
+        end:   b.end + bufferMin,
+      }))
       .sort((a, b) => a.start - b.start);
 
     // Walk the timeline emitting free gaps
@@ -332,17 +338,16 @@ function intervalsOverlap(
   return aStart < bEnd + gap && aEnd > bStart - gap;
 }
 
-function overlapsFixedClass(
+function overlapsClassBusy(
   date: string,
   startMin: number,
   endMin: number,
-  fixedSlots: FixedSlot[],
+  classBusyByDate: ClassBusyByDate,
   bufferMin: number,
 ): boolean {
-  const jsDay = new Date(date + "T00:00:00Z").getUTCDay();
-  for (const fixed of fixedSlots.filter(s => s.day_of_week === jsDay + 1)) {
-    const fStart = timeToMin(fixed.start_time.slice(0, 5)) - bufferMin;
-    const fEnd   = timeToMin(fixed.start_time.slice(0, 5)) + (fixed.duration ?? 90) + bufferMin;
+  for (const busy of classBusyByDate.get(date) ?? []) {
+    const fStart = busy.start - bufferMin;
+    const fEnd   = busy.end + bufferMin;
     if (intervalsOverlap(startMin, endMin, fStart, fEnd)) return true;
   }
   return false;
@@ -368,11 +373,11 @@ function canPlaceAt(
   endMin: number,
   placed: PlacedInterval[],
   availableSlots: AvailableSlot[],
-  fixedSlots: FixedSlot[],
+  classBusyByDate: ClassBusyByDate,
   bufferMin: number,
 ): boolean {
   if (!isWithinAvailableSlot(date, startMin, endMin, availableSlots)) return false;
-  if (overlapsFixedClass(date, startMin, endMin, fixedSlots, bufferMin)) return false;
+  if (overlapsClassBusy(date, startMin, endMin, classBusyByDate, bufferMin)) return false;
   for (const p of placed.filter(x => x.date === date)) {
     if (intervalsOverlap(startMin, endMin, p.startMin, p.endMin, bufferMin)) return false;
   }
@@ -423,7 +428,7 @@ function findNextValidPlacement(
   duration: number,
   placed: PlacedInterval[],
   availableSlots: AvailableSlot[],
-  fixedSlots: FixedSlot[],
+  fixedSlots: ClassBusyByDate,
   bufferMin: number,
   searchFrom: { date: string; min: number },
   deadlineDate?: string | null,
@@ -469,7 +474,7 @@ function findNextValidPlacement(
 function resolveCollisions(
   blocks: PlannerLLMBlock[],
   availableSlots: AvailableSlot[],
-  fixedSlots: FixedSlot[],
+  fixedSlots: ClassBusyByDate,
   bufferMin: number,
   taskTitles: Map<string, string>,
 ): { blocks: PlannerLLMBlock[]; warnings: string[] } {
@@ -554,7 +559,7 @@ function autoFillByPriority(
   tasks: ActiveTask[],
   taskQuotas: Map<string, number>,
   availableSlots: AvailableSlot[],
-  fixedSlots: FixedSlot[],
+  fixedSlots: ClassBusyByDate,
   bufferMin: number,
   workMin: number,
   horizonEnd: string,
@@ -1140,12 +1145,14 @@ export async function generateSchedulePlan(
     { data: profile, error: profileError },
     { data: tasks, error: tasksError },
     { data: rawSchedules, error: schedError },
+    { data: classBlockRows, error: classBlockErr },
   ] = await Promise.all([
     supabase
       .from("profiles")
       .select(
         "academic_background, weekly_hours, work_rest_interval, buffer_time_minutes, " +
-        "learning_style, scheduling_style, hobbies_and_breaks",
+        "learning_style, scheduling_style, hobbies_and_breaks, " +
+        "semester_start_date, semester_end_date",
       )
       .eq("id", user.id)
       .single(),
@@ -1158,15 +1165,23 @@ export async function generateSchedulePlan(
       .order("due_date", { ascending: true, nullsFirst: false }),
     supabase
       .from("schedules")
-      .select("day_of_week, start_time, duration, type, courses(course_name)")
+      .select("id, day_of_week, start_time, duration, type, courses(course_name)")
       .eq("user_id", user.id)
       .order("day_of_week", { ascending: true }),
+    supabase
+      .from("scheduled_blocks")
+      .select("id, kind, source_schedule_id, scheduled_date, start_time, end_time, title, is_locked, task_id")
+      .eq("user_id", user.id)
+      .in("kind", ["class_override", "class_cancelled"])
+      .gte("scheduled_date", cleanFrom)
+      .lte("scheduled_date", cleanTo),
   ]);
 
   if (profileError || !profile)
     return { success: false as const, error: "Could not load profile" };
   if (tasksError) return { success: false as const, error: tasksError.message };
   if (schedError) return { success: false as const, error: schedError.message };
+  if (classBlockErr) return { success: false as const, error: classBlockErr.message };
 
   const profileRow = profile as unknown as {
     academic_background: string | null;
@@ -1176,6 +1191,8 @@ export async function generateSchedulePlan(
     learning_style: string | null;
     scheduling_style: string | null;
     hobbies_and_breaks: string | null;
+    semester_start_date: string | null;
+    semester_end_date: string | null;
   };
 
   const userSettings: UserPlanningSettings = {
@@ -1188,13 +1205,38 @@ export async function generateSchedulePlan(
     academic_background: profileRow.academic_background ?? null,
   };
 
-  const fixedSlots: FixedSlot[] = (rawSchedules ?? []).map(s => ({
-    day_of_week: s.day_of_week,
-    start_time:  s.start_time,
-    duration:    s.duration,
-    type:        s.type,
-    course_name: ((s.courses as unknown) as { course_name: string } | null)?.course_name ?? null,
+  const scheduleRules: ScheduleRule[] = (rawSchedules ?? []).map((s) => ({
+    id:           s.id as string,
+    day_of_week:  s.day_of_week,
+    start_time:   s.start_time as string,
+    duration:     s.duration,
+    type:         s.type as string,
+    course_name:
+      ((s.courses as unknown) as { course_name: string } | null)?.course_name ?? null,
   }));
+
+  const classRows: ClassInstanceRow[] = (classBlockRows ?? [])
+    .filter((r) => r.source_schedule_id)
+    .map((r) => ({
+      id:                 r.id as string,
+      kind:               r.kind as "class_override" | "class_cancelled",
+      source_schedule_id: r.source_schedule_id as string,
+      scheduled_date:     toDateKey(r.scheduled_date as string),
+      start_time:         r.start_time as string,
+      end_time:           r.end_time as string,
+      title:              r.title as string,
+      is_locked:          r.is_locked as boolean,
+      task_id:            r.task_id as string | null,
+    }));
+
+  const horizonDateList = getHorizonDateStrings(cleanFrom, cleanTo);
+  const classBusyByDate = buildClassBusyByDate({
+    dates:         horizonDateList,
+    schedules:     scheduleRules,
+    classRows,
+    semesterStart: profileRow.semester_start_date,
+    semesterEnd:   profileRow.semester_end_date,
+  });
 
   // ── Phase 1: Deterministic slot generation ─────────────────────────────────
   const workRest  = profileRow.work_rest_interval ?? "50/10";
@@ -1204,7 +1246,7 @@ export async function generateSchedulePlan(
   const availableSlots = trimPastAvailableSlots(
     computeAvailableSlots(
       profileRow.weekly_hours,
-      fixedSlots,
+      classBusyByDate,
       buffer,
       planDuration,
     ),
@@ -1427,7 +1469,7 @@ CONFLICT (time is insufficient — max 3 options, titles 1-4 words):
   const { blocks: shiftedBlocks, warnings: collisionWarnings } = resolveCollisions(
     parsed.scheduled_blocks,
     availableSlots,
-    fixedSlots,
+    classBusyByDate,
     buffer,
     taskTitles,
   );
@@ -1475,7 +1517,7 @@ CONFLICT (time is insufficient — max 3 options, titles 1-4 words):
     activeTasks,
     taskQuotas,
     availableSlots,
-    fixedSlots,
+    classBusyByDate,
     buffer,
     workMin,
     horizonEnd,
@@ -1891,6 +1933,197 @@ export async function createManualBlock(data: {
   return { success: true as const, block: inserted };
 }
 
+// ── Recurring class instance overrides ──────────────────────────────────────
+
+/** Cancel a single virtual class occurrence (inserts class_cancelled row). */
+export async function cancelVirtualClassInstance(
+  sourceScheduleId: string,
+  instanceDate: string,
+  title: string,
+) {
+  const supabase = await createClient();
+  const { data: { user }, error: authError } = await supabase.auth.getUser();
+  if (authError || !user) return { success: false as const, error: "Not authenticated" };
+
+  const { data: rule } = await supabase
+    .from("schedules")
+    .select("start_time, duration")
+    .eq("id", sourceScheduleId)
+    .eq("user_id", user.id)
+    .single();
+
+  const startTime = normalizeTimeKey((rule?.start_time as string) ?? "09:00");
+  const startMin  = timeToMin(startTime);
+  const endTime   = minToTime(startMin + ((rule?.duration as number | null) ?? 90));
+
+  const { data: inserted, error } = await supabase
+    .from("scheduled_blocks")
+    .insert({
+      user_id:            user.id,
+      task_id:            null,
+      title:              title.trim() || "Class",
+      scheduled_date:     instanceDate,
+      start_time:         startTime,
+      end_time:           endTime,
+      is_locked:          true,
+      kind:               "class_cancelled",
+      source_schedule_id: sourceScheduleId,
+    })
+    .select("id")
+    .single();
+
+  if (error) {
+    console.error("[planner] cancelVirtualClassInstance error:", error.message);
+    return { success: false as const, error: error.message };
+  }
+
+  revalidatePath("/planner");
+  revalidatePath("/", "layout");
+  return { success: true as const, block: inserted };
+}
+
+/** Move/resize a virtual class → physical class_override (+ cancel on original date if moved). */
+export async function moveVirtualClassInstance(data: {
+  sourceScheduleId: string;
+  originalDate:     string;
+  scheduledDate:    string;
+  startTime:        string;
+  endTime:          string;
+  title:            string;
+}) {
+  const supabase = await createClient();
+  const { data: { user }, error: authError } = await supabase.auth.getUser();
+  if (authError || !user) return { success: false as const, error: "Not authenticated" };
+
+  if (data.originalDate !== data.scheduledDate) {
+    const { data: rule } = await supabase
+      .from("schedules")
+      .select("start_time, duration")
+      .eq("id", data.sourceScheduleId)
+      .eq("user_id", user.id)
+      .single();
+
+    const startTime = normalizeTimeKey((rule?.start_time as string) ?? "09:00");
+    const startMin  = timeToMin(startTime);
+    const endTime   = minToTime(startMin + ((rule?.duration as number | null) ?? 90));
+
+    const { error: cancelErr } = await supabase.from("scheduled_blocks").insert({
+      user_id:            user.id,
+      task_id:            null,
+      title:              data.title.trim() || "Class",
+      scheduled_date:     data.originalDate,
+      start_time:         startTime,
+      end_time:           endTime,
+      is_locked:          true,
+      kind:               "class_cancelled",
+      source_schedule_id: data.sourceScheduleId,
+    });
+
+    if (cancelErr) {
+      console.error("[planner] moveVirtualClassInstance cancel error:", cancelErr.message);
+      return { success: false as const, error: cancelErr.message };
+    }
+  } else {
+    const { error: cancelErr } = await supabase.from("scheduled_blocks").insert({
+      user_id:            user.id,
+      task_id:            null,
+      title:              data.title.trim() || "Class",
+      scheduled_date:     data.originalDate,
+      start_time:         data.startTime,
+      end_time:           data.endTime,
+      is_locked:          true,
+      kind:               "class_cancelled",
+      source_schedule_id: data.sourceScheduleId,
+    });
+
+    if (cancelErr) {
+      console.error("[planner] moveVirtualClassInstance same-day cancel error:", cancelErr.message);
+      return { success: false as const, error: cancelErr.message };
+    }
+  }
+
+  const { data: inserted, error } = await supabase
+    .from("scheduled_blocks")
+    .insert({
+      user_id:            user.id,
+      task_id:            null,
+      title:              data.title.trim() || "Class",
+      scheduled_date:     data.scheduledDate,
+      start_time:         data.startTime,
+      end_time:           data.endTime,
+      is_locked:          true,
+      kind:               "class_override",
+      source_schedule_id: data.sourceScheduleId,
+    })
+    .select("id")
+    .single();
+
+  if (error) {
+    console.error("[planner] moveVirtualClassInstance override error:", error.message);
+    return { success: false as const, error: error.message };
+  }
+
+  revalidatePath("/planner");
+  revalidatePath("/", "layout");
+  return { success: true as const, block: inserted };
+}
+
+/** Delete a class_override and restore the virtual instance on the rule weekday. */
+export async function revertClassOverride(blockId: string) {
+  const supabase = await createClient();
+  const { data: { user }, error: authError } = await supabase.auth.getUser();
+  if (authError || !user) return { success: false as const, error: "Not authenticated" };
+
+  const { data: override, error: fetchErr } = await supabase
+    .from("scheduled_blocks")
+    .select("id, source_schedule_id, scheduled_date, kind")
+    .eq("id", blockId)
+    .eq("user_id", user.id)
+    .single();
+
+  if (fetchErr || !override || override.kind !== "class_override") {
+    return { success: false as const, error: "Override block not found." };
+  }
+
+  const sourceId = override.source_schedule_id as string | null;
+  if (sourceId) {
+    const { data: rule } = await supabase
+      .from("schedules")
+      .select("day_of_week")
+      .eq("id", sourceId)
+      .eq("user_id", user.id)
+      .single();
+
+    if (rule) {
+      const { data: cancels } = await supabase
+        .from("scheduled_blocks")
+        .select("id, scheduled_date")
+        .eq("user_id", user.id)
+        .eq("source_schedule_id", sourceId)
+        .eq("kind", "class_cancelled");
+
+      for (const c of cancels ?? []) {
+        const jsDay = new Date(`${c.scheduled_date as string}T12:00:00`).getDay();
+        if (jsDay + 1 === rule.day_of_week) {
+          await supabase.from("scheduled_blocks").delete().eq("id", c.id);
+        }
+      }
+    }
+  }
+
+  const { error } = await supabase
+    .from("scheduled_blocks")
+    .delete()
+    .eq("id", blockId)
+    .eq("user_id", user.id);
+
+  if (error) return { success: false as const, error: error.message };
+
+  revalidatePath("/planner");
+  revalidatePath("/", "layout");
+  return { success: true as const };
+}
+
 // ── loadPlannerWeekData ───────────────────────────────────────────────────────
 
 function mapStudyBlock(b: {
@@ -1902,16 +2135,19 @@ function mapStudyBlock(b: {
   end_time: string;
   is_locked: boolean;
   task_id: string | null;
+  source_schedule_id?: string | null;
 }): CalendarBlock {
   return {
-    id:             b.id,
-    kind:           b.kind as CalendarBlock["kind"],
-    title:          b.title,
-    scheduled_date: toDateKey(b.scheduled_date),
-    start_time:     normalizeTimeKey(b.start_time),
-    end_time:       normalizeTimeKey(b.end_time),
-    is_locked:      b.is_locked,
-    task_id:        b.task_id != null ? String(b.task_id).trim() : null,
+    id:                 b.id,
+    kind:               b.kind as CalendarBlock["kind"],
+    title:              b.title,
+    scheduled_date:     toDateKey(b.scheduled_date),
+    start_time:         normalizeTimeKey(b.start_time),
+    end_time:           normalizeTimeKey(b.end_time),
+    is_locked:          b.is_locked,
+    task_id:            b.task_id != null ? String(b.task_id).trim() : null,
+    source_schedule_id: b.source_schedule_id ?? null,
+    is_virtual:         false,
   };
 }
 
@@ -1971,10 +2207,11 @@ export async function loadPlannerWeekData(
     { data: goals, error: goalsError },
     { data: progressBlockRows, error: progressError },
     { data: taskRows, error: tasksError },
+    { data: profileRow, error: profileErr },
   ] = await Promise.all([
     supabase
       .from("scheduled_blocks")
-      .select("id, kind, title, scheduled_date, start_time, end_time, is_locked, task_id")
+      .select("id, kind, title, scheduled_date, start_time, end_time, is_locked, task_id, source_schedule_id")
       .eq("user_id", user.id)
       .gte("scheduled_date", weekStart)
       .lte("scheduled_date", weekEnd)
@@ -1986,7 +2223,7 @@ export async function loadPlannerWeekData(
       .eq("user_id", user.id),
     supabase
       .from("scheduled_blocks")
-      .select("id, kind, title, scheduled_date, start_time, end_time, is_locked, task_id")
+      .select("id, kind, title, scheduled_date, start_time, end_time, is_locked, task_id, source_schedule_id")
       .eq("user_id", user.id)
       .gte("scheduled_date", historyStart)
       .lt("scheduled_date", weekStart)
@@ -1998,7 +2235,7 @@ export async function loadPlannerWeekData(
       .eq("user_id", user.id),
     supabase
       .from("scheduled_blocks")
-      .select("id, kind, title, scheduled_date, start_time, end_time, is_locked, task_id")
+      .select("id, kind, title, scheduled_date, start_time, end_time, is_locked, task_id, source_schedule_id")
       .eq("user_id", user.id)
       .in("kind", ["ai", "manual"])
       .not("task_id", "is", null)
@@ -2009,6 +2246,11 @@ export async function loadPlannerWeekData(
       .select("id, title, due_date, estimated_duration, course_name, status, progress, user_priority_index")
       .eq("user_id", user.id)
       .in("status", ["pending", "in_progress", "completed"]),
+    supabase
+      .from("profiles")
+      .select("semester_start_date, semester_end_date")
+      .eq("id", user.id)
+      .single(),
   ]);
 
   if (studyError) {
@@ -2036,6 +2278,56 @@ export async function loadPlannerWeekData(
     console.error("[loadPlannerWeekData] tasks error:", tasksError.message);
   }
 
+  if (profileErr) {
+    console.error("[loadPlannerWeekData] profile error:", profileErr.message);
+  }
+
+  const semesterStart = profileRow?.semester_start_date ?? null;
+  const semesterEnd   = profileRow?.semester_end_date ?? null;
+
+  const scheduleRules: ScheduleRule[] = (rawSchedules ?? []).map((s) => ({
+    id:           s.id as string,
+    day_of_week:  s.day_of_week,
+    start_time:   s.start_time as string,
+    duration:     s.duration,
+    type:         s.type as string,
+    course_name:
+      ((s.courses as unknown) as { course_name: string } | null)?.course_name ?? null,
+  }));
+
+  const classRows: ClassInstanceRow[] = (studyBlocks ?? [])
+    .filter(
+      (b) =>
+        (b.kind === "class_override" || b.kind === "class_cancelled") &&
+        b.source_schedule_id,
+    )
+    .map((b) => ({
+      id:                 b.id as string,
+      kind:               b.kind as "class_override" | "class_cancelled",
+      source_schedule_id: b.source_schedule_id as string,
+      scheduled_date:     toDateKey(b.scheduled_date as string),
+      start_time:         b.start_time as string,
+      end_time:           b.end_time as string,
+      title:              b.title as string,
+      is_locked:          b.is_locked as boolean,
+      task_id:            b.task_id as string | null,
+    }));
+
+  const studyOnlyBlocks = (studyBlocks ?? [])
+    .filter((b) => b.kind !== "class_override" && b.kind !== "class_cancelled")
+    .map(mapStudyBlock);
+
+  const calendarBlocks = mergeClassBlocksForWeek({
+    weekDays,
+    weekStart,
+    weekEnd,
+    studyBlocks:   studyOnlyBlocks,
+    schedules:     scheduleRules,
+    classRows,
+    semesterStart,
+    semesterEnd,
+  });
+
   const completedGoalKeys      = Array.from(buildCompletedGoalKeys(goals ?? []));
   const sessionLoggedKeys      = Array.from(buildSessionLoggedKeys(goals ?? []));
   const fullyCompletedGoalKeys = Array.from(buildFullyCompletedGoalKeys(goals ?? []));
@@ -2052,34 +2344,6 @@ export async function loadPlannerWeekData(
     isFullyCompleted:         g.is_fully_completed,
     baselineProgressSnapshot: g.baseline_progress_snapshot ?? null,
   }));
-
-  const calendarBlocks: CalendarBlock[] = (studyBlocks ?? []).map(mapStudyBlock);
-
-  for (const slot of rawSchedules ?? []) {
-    const startTime = normalizeTimeKey(slot.start_time);
-    const startMin  = timeToMin(startTime);
-    const endTime   = minToTime(startMin + (slot.duration ?? 90));
-    const title =
-      ((slot.courses as unknown) as { course_name: string } | null)?.course_name ??
-      slot.type ??
-      "Class";
-
-    for (const dayStr of weekDays) {
-      const jsDay = new Date(`${dayStr}T12:00:00`).getDay(); // 0=Sun … 6=Sat
-      if (slot.day_of_week !== jsDay + 1) continue; // DB: 1=Sun … 7=Sat
-
-      calendarBlocks.push({
-        id:             `fixed-${slot.id}-${dayStr}`,
-        kind:           "fixed",
-        title,
-        scheduled_date: dayStr,
-        start_time:     startTime,
-        end_time:       endTime,
-        is_locked:      true,
-        task_id:        null,
-      });
-    }
-  }
 
   const lockedHistoryBlocks: LockedHistoryBlock[] = (historyBlocks ?? [])
     .filter((b) => b.task_id)
