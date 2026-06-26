@@ -13,6 +13,7 @@ import {
   Clock,
   ListChecks,
   Loader2,
+  MoreVertical,
   Pencil,
   Plus,
   Trash2,
@@ -401,18 +402,18 @@ function ProgressWidget({
       <span className="w-8 text-end text-xs font-semibold tabular-nums text-muted-foreground">
         <PercentValue value={initial} />
       </span>
-      {/* Minimal bar */}
-      <div className="h-1.5 w-16 overflow-hidden rounded-full bg-muted">
+      {/* Minimal bar — desktop only */}
+      <div className="hidden h-1.5 w-16 overflow-hidden rounded-full bg-muted md:block">
         <div
           className={cn("h-full rounded-full transition-all", progressBarColour(initial))}
           style={{ width: `${initial}%` }}
         />
       </div>
-      {/* Edit pencil */}
+      {/* Edit pencil — desktop only */}
       <button
         type="button"
         onClick={() => { setDraft(initial); setEditing(true); }}
-        className="p-0.5 text-muted-foreground/40 hover:text-primary transition-colors"
+        className="hidden p-0.5 text-muted-foreground/40 hover:text-primary transition-colors md:inline-flex"
         title="Override progress"
       >
         <Pencil className="h-3 w-3" />
@@ -507,7 +508,7 @@ function DurationWidget({
           setDraft(initial != null ? String(initial) : "");
           setEditing(true);
         }}
-        className="p-0.5 text-muted-foreground/40 hover:text-primary transition-colors"
+        className="hidden p-0.5 text-muted-foreground/40 hover:text-primary transition-colors md:inline-flex"
         title="Edit estimated time"
       >
         <Pencil className="h-3 w-3" />
@@ -522,11 +523,14 @@ function DeadlineWidget({
   initial,
   locale,
   onSaved,
+  variant = "inline",
 }: {
   taskId: string;
   initial: string | null;
   locale: "en" | "he";
   onSaved: (next: string | null) => void;
+  /** `embedded` — date editor for mobile overflow menu (no trigger button) */
+  variant?: "inline" | "embedded";
 }) {
   const router = useRouter();
   const { translate } = useLanguage();
@@ -562,6 +566,70 @@ function DeadlineWidget({
     });
   };
 
+  const editorPanel = (
+    <div
+      className={cn(
+        variant === "embedded"
+          ? "space-y-2"
+          : "absolute end-0 top-full z-20 mt-1 w-52 rounded-lg border border-border bg-card p-2.5 shadow-lg",
+      )}
+      dir="ltr"
+      onClick={(e) => e.stopPropagation()}
+    >
+      <p className="mb-1.5 text-[11px] font-medium text-muted-foreground">
+        {translate("dueDateLabel")}
+      </p>
+      {initial && variant === "embedded" && (
+        <p className="text-xs text-foreground">
+          <LtrIsolate>{formatDate(initial)}</LtrIsolate>
+        </p>
+      )}
+      <input
+        type="date"
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        disabled={saving}
+        className="h-8 w-full rounded border border-input bg-background px-2 text-xs font-mono focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        onKeyDown={(e) => {
+          if (e.key === "Enter") save();
+          if (e.key === "Escape") variant === "embedded" ? undefined : setOpen(false);
+        }}
+        autoFocus={variant !== "embedded"}
+      />
+      <div className="mt-2 flex items-center gap-1">
+        <Button
+          size="sm"
+          className="h-7 flex-1 gap-1 text-xs"
+          onClick={save}
+          disabled={saving}
+        >
+          {saving ? (
+            <Loader2 className="h-3 w-3 animate-spin" />
+          ) : (
+            <Check className="h-3 w-3" />
+          )}
+          {translate("saveLabel")}
+        </Button>
+        {initial && (
+          <Button
+            size="sm"
+            variant="ghost"
+            className="h-7 px-2 text-xs text-muted-foreground"
+            onClick={clear}
+            disabled={saving}
+            title={translate("clearDeadline")}
+          >
+            <X className="h-3 w-3" />
+          </Button>
+        )}
+      </div>
+    </div>
+  );
+
+  if (variant === "embedded") {
+    return editorPanel;
+  }
+
   return (
     <div className="relative shrink-0">
       <button
@@ -591,52 +659,87 @@ function DeadlineWidget({
             aria-label="Close"
             onClick={() => setOpen(false)}
           />
+          {editorPanel}
+        </>
+      )}
+    </div>
+  );
+}
+
+// ─── Mobile task row overflow menu ───────────────────────────────────────────
+
+function TaskRowMobileMenu({
+  task,
+  locale,
+  deleting,
+  onDelete,
+  onDueDateChange,
+}: {
+  task: Task;
+  locale: "en" | "he";
+  deleting: boolean;
+  onDelete: () => void;
+  onDueDateChange?: (id: string, dueDate: string | null) => void;
+}) {
+  const { translate } = useLanguage();
+  const [open, setOpen] = useState(false);
+
+  const close = () => setOpen(false);
+
+  return (
+    <div className="relative shrink-0 md:hidden">
+      <button
+        type="button"
+        aria-label="More options"
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+        className="flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground"
+      >
+        <MoreVertical className="h-4 w-4" />
+      </button>
+
+      {open && (
+        <>
+          <button
+            type="button"
+            className="fixed inset-0 z-40 cursor-default"
+            aria-label="Close menu"
+            onClick={close}
+          />
           <div
-            className="absolute end-0 top-full z-20 mt-1 w-52 rounded-lg border border-border bg-card p-2.5 shadow-lg"
-            dir="ltr"
+            className="absolute end-0 top-full z-50 mt-1 w-56 rounded-lg border border-border bg-card p-3 shadow-lg"
             onClick={(e) => e.stopPropagation()}
           >
-            <p className="mb-1.5 text-[11px] font-medium text-muted-foreground">
-              {translate("dueDateLabel")}
-            </p>
-            <input
-              type="date"
-              value={draft}
-              onChange={(e) => setDraft(e.target.value)}
-              disabled={saving}
-              className="h-8 w-full rounded border border-input bg-background px-2 text-xs font-mono focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              onKeyDown={(e) => {
-                if (e.key === "Enter") save();
-                if (e.key === "Escape") setOpen(false);
+            <DeadlineWidget
+              variant="embedded"
+              taskId={task.id}
+              initial={task.due_date}
+              locale={locale}
+              onSaved={(next) => {
+                onDueDateChange?.(task.id, next);
+                close();
               }}
-              autoFocus
             />
-            <div className="mt-2 flex items-center gap-1">
+
+            <div className="mt-3 border-t border-border pt-3">
               <Button
+                type="button"
+                variant="outline"
                 size="sm"
-                className="h-7 flex-1 gap-1 text-xs"
-                onClick={save}
-                disabled={saving}
+                className="h-8 w-full gap-2 border-destructive/40 text-xs text-destructive hover:bg-destructive/10"
+                disabled={deleting}
+                onClick={() => {
+                  onDelete();
+                  close();
+                }}
               >
-                {saving ? (
-                  <Loader2 className="h-3 w-3 animate-spin" />
+                {deleting ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
                 ) : (
-                  <Check className="h-3 w-3" />
+                  <Trash2 className="h-3.5 w-3.5" />
                 )}
-                {translate("saveLabel")}
+                {translate("deleteTask")}
               </Button>
-              {initial && (
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  className="h-7 px-2 text-xs text-muted-foreground"
-                  onClick={clear}
-                  disabled={saving}
-                  title={translate("clearDeadline")}
-                >
-                  <X className="h-3 w-3" />
-                </Button>
-              )}
             </div>
           </div>
         </>
@@ -677,36 +780,43 @@ function TaskRow({
 
   return (
     <Card className={cn("transition-shadow hover:shadow-sm", isDone && "bg-muted/20")}>
-      <CardContent className="flex items-center gap-3 p-3">
-        {/* Title + course — no `italic` ever; only opacity + line-through for done */}
+      <CardContent className="flex items-start gap-2 p-3 md:items-center md:gap-3">
+        {/* Title + course */}
         <div className="min-w-0 flex-1 space-y-0.5">
           <p className={cn(
-            "truncate font-sans text-sm font-medium not-italic",
+            "font-sans text-sm font-medium not-italic",
+            "whitespace-normal break-words md:truncate",
             isDone ? "text-muted-foreground line-through opacity-60" : "text-foreground"
           )}>
             <AutoDirText>{task.title}</AutoDirText>
           </p>
           {task.course_name && (
-            <p className="truncate font-sans text-xs text-muted-foreground not-italic">
+            <p className="truncate font-sans text-xs text-muted-foreground not-italic max-md:whitespace-normal max-md:break-words md:truncate">
               <AutoDirText>{task.course_name}</AutoDirText>
             </p>
           )}
         </div>
 
-        {/* Progress widget */}
-        <ProgressWidget
-          taskId={task.id}
-          initial={progress}
-          onSaved={(next) => onProgressChange?.(task.id, next)}
-        />
+        {/* ETA + progress — mobile: ETA then %; desktop: progress then ETA (unchanged) */}
+        <div className="flex shrink-0 items-center gap-1.5 md:gap-2">
+          <div className="order-3 md:order-2">
+            <ProgressWidget
+              taskId={task.id}
+              initial={progress}
+              onSaved={(next) => onProgressChange?.(task.id, next)}
+            />
+          </div>
+          <div className="order-2 md:order-3">
+            <DurationWidget
+              taskId={task.id}
+              initial={task.estimated_duration}
+              onSaved={(next) => onEstimatedDurationChange?.(task.id, next)}
+            />
+          </div>
+        </div>
 
-        {/* Meta + delete */}
-        <div className="flex shrink-0 items-center gap-2">
-          <DurationWidget
-            taskId={task.id}
-            initial={task.estimated_duration}
-            onSaved={(next) => onEstimatedDurationChange?.(task.id, next)}
-          />
+        {/* Due date + delete — desktop only */}
+        <div className="hidden shrink-0 items-center gap-2 md:flex">
           <DeadlineWidget
             taskId={task.id}
             initial={task.due_date}
@@ -727,6 +837,15 @@ function TaskRow({
             )}
           </button>
         </div>
+
+        {/* Overflow menu — mobile only */}
+        <TaskRowMobileMenu
+          task={task}
+          locale={locale}
+          deleting={deleting}
+          onDelete={handleDelete}
+          onDueDateChange={onDueDateChange}
+        />
       </CardContent>
     </Card>
   );
