@@ -1,6 +1,13 @@
 export type ThemeMode = "light" | "dark" | "system";
 export type Locale = "en" | "he";
 export type TaskStatus = "pending" | "in_progress" | "completed" | "archived";
+
+/** Append-only behavioral signals for the insights engine */
+export type TaskEventType =
+  | "PLAN_ADJUSTED"
+  | "TARGET_REDUCED"
+  | "DAILY_GOAL_MET"
+  | "DAILY_GOAL_MISSED";
 export type ScheduleType = "lecture" | "tutorial" | "other";
 export type LearningStyle = "visual" | "reading" | "practice" | "mixed";
 export type SchedulingStyle = "marathon" | "interleaved";
@@ -56,6 +63,8 @@ export interface Task {
   description: string | null;
   due_date: string | null;            // ISO date "YYYY-MM-DD"
   estimated_duration: number | null;  // minutes
+  /** Initial ETA snapshot at task creation — used for relational pacing analytics */
+  original_eta: number | null;
   priority: number;
   status: TaskStatus;
   /** 0–100 completion percentage. Added by ai_planner_setup.sql migration. */
@@ -65,6 +74,49 @@ export interface Task {
   user_priority_index: number | null;
   created_at: string;
   updated_at: string;
+}
+
+export interface TaskEvent {
+  id: string;
+  task_id: string;
+  event_type: TaskEventType;
+  created_at: string;
+}
+
+/** Per-task task-control classification for charting */
+export interface TaskControlInsight {
+  taskId: string;
+  title: string;
+  courseName: string | null;
+  metCount: number;
+  missedCount: number;
+  planAdjustedCount: number;
+  targetReducedCount: number;
+}
+
+/** Average relational pacing variance grouped by course */
+export interface CourseVarianceInsight {
+  courseName: string;
+  averageVariance: number;
+  taskCount: number;
+}
+
+/** Structured payload for Recharts / dashboard insights widgets */
+export interface WeeklyInsights {
+  highControlTasks: TaskControlInsight[];
+  lowControlTasks: TaskControlInsight[];
+  courseVariances: CourseVarianceInsight[];
+  /** DAILY_GOAL_MET / (MET + MISSED) over the last 7 days; null when no outcomes */
+  overallExecutionRate: number | null;
+  taskControlScore: {
+    highControlCount: number;
+    lowControlCount: number;
+    activeTaskCount: number;
+  };
+  /** Inclusive look-back window used for this payload */
+  days?: number;
+  periodStart: string;
+  periodEnd: string;
 }
 
 export interface Course {
@@ -99,6 +151,8 @@ export interface DailyGoal {
   goal_date: string;
   target_minutes: number;
   time_logged: boolean;
+  /** Absolute minutes of work logged today — overwrites on each preset tap */
+  actual_minutes_spent: number;
   is_fully_completed: boolean;
   /** Exact registry progress (X) captured when parent attestation is checked */
   baseline_progress_snapshot: number | null;
@@ -125,6 +179,8 @@ export interface DailyGoalTableRow {
   cumulativeTargetPct: number;
   /** Registry baseline X (tasks.progress) — used for snapshot/restore on attestation toggle */
   registryProgressPct: number;
+  /** Minutes of work logged today (absolute, not additive) */
+  actualMinutesSpent: number;
   timeLogged: boolean;
   isFullyCompleted: boolean;
   /** "{Task Name} — XX%" written by approvePlan; null for manually created goals */

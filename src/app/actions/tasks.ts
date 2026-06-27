@@ -3,6 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { createClient } from "@/utils/supabase/server";
 import { sortTasksByDisplayOrder } from "@/lib/task-sort";
+import { insertTaskEvent } from "@/lib/task-events";
 
 export interface AddTaskInput {
   title: string;
@@ -25,11 +26,13 @@ export async function addTask(data: AddTaskInput) {
   // A UNIQUE constraint on (user_id, spark_id) would fire for multiple NULLs
   // in standard Postgres, so the schema uses a partial unique index
   // WHERE spark_id IS NOT NULL — leaving manual tasks unrestricted.
+  const eta = data.estimated_duration || null;
   const { data: task, error } = await supabase.from("tasks").insert({
     title: data.title.trim(),
     course_name: data.course_name.trim() || null,
     due_date: data.due_date || null,
-    estimated_duration: data.estimated_duration || null,
+    estimated_duration: eta,
+    original_eta: eta,
     user_id: user.id,
     source: "manual",
     status: "pending",
@@ -84,6 +87,13 @@ export async function updateTaskEstimatedDuration(
     return { error: "Estimated time must be greater than 0." };
   }
 
+  const { data: existing } = await supabase
+    .from("tasks")
+    .select("estimated_duration")
+    .eq("id", taskId)
+    .eq("user_id", user.id)
+    .single();
+
   const { error } = await supabase
     .from("tasks")
     .update({
@@ -94,6 +104,15 @@ export async function updateTaskEstimatedDuration(
     .eq("user_id", user.id);
 
   if (error) return { error: error.message };
+
+  const previous = existing?.estimated_duration;
+  if (
+    previous != null &&
+    estimatedDuration != null &&
+    estimatedDuration < previous
+  ) {
+    await insertTaskEvent(supabase, taskId, "TARGET_REDUCED");
+  }
 
   revalidatePath("/", "layout");
   revalidatePath("/tasks");

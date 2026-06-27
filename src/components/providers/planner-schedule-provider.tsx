@@ -74,6 +74,7 @@ function goalRecordsToMap(records: ScheduleGoalRecord[]): Map<string, GoalRecord
       {
         goalId:                   r.goalId,
         timeLogged:               r.timeLogged,
+        actualMinutesSpent:       r.actualMinutesSpent,
         isFullyCompleted:         r.isFullyCompleted,
         baselineProgressSnapshot: r.baselineProgressSnapshot,
       },
@@ -207,18 +208,26 @@ export function PlannerScheduleProvider({ children }: { children: React.ReactNod
       const existing = next.get(mapKey) ?? {
         goalId:                   null,
         timeLogged:               false,
+        actualMinutesSpent:       0,
         isFullyCompleted:         false,
         baselineProgressSnapshot: null,
       };
-      updated = { ...existing, ...patch };
+      const merged = { ...existing, ...patch };
+      if (patch.actualMinutesSpent !== undefined) {
+        merged.timeLogged = patch.actualMinutesSpent > 0;
+      }
+      updated = merged;
       next.set(mapKey, updated);
       return next;
     });
 
-    if (patch.timeLogged !== undefined) {
+    if (patch.timeLogged !== undefined || patch.actualMinutesSpent !== undefined) {
       setSessionLoggedKeys((keys) => {
         const set = new Set(keys);
-        if (patch.timeLogged) set.add(mapKey);
+        const logged = updated?.actualMinutesSpent
+          ? updated.actualMinutesSpent > 0
+          : updated?.timeLogged;
+        if (logged) set.add(mapKey);
         else set.delete(mapKey);
         return [...set];
       });
@@ -233,10 +242,15 @@ export function PlannerScheduleProvider({ children }: { children: React.ReactNod
       });
     }
 
-    if (patch.timeLogged !== undefined || patch.isFullyCompleted !== undefined) {
+    if (
+      patch.timeLogged !== undefined ||
+      patch.actualMinutesSpent !== undefined ||
+      patch.isFullyCompleted !== undefined
+    ) {
       setCompletedGoalKeys((keys) => {
         const set = new Set(keys);
-        if (updated?.timeLogged || updated?.isFullyCompleted) set.add(mapKey);
+        const logged = (updated?.actualMinutesSpent ?? 0) > 0 || updated?.timeLogged;
+        if (logged || updated?.isFullyCompleted) set.add(mapKey);
         else set.delete(mapKey);
         return [...set];
       });

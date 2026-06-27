@@ -8,6 +8,8 @@ const translations = {
     futurePlanner: "Future Planner",
     masterTasks: "Master Tasks",
     settings: "Settings",
+    insightsTitle: "Insights",
+    insightsDesc: "Trends, time accuracy, and task control",
     collapseSidebar: "Collapse sidebar",
     expandSidebar: "Expand sidebar",
 
@@ -226,6 +228,58 @@ const translations = {
     nextWeek: "Next Week",
     calendarToday: "Today",
     loadingWeek: "Loading week…",
+
+    // ── Insights ────────────────────────────────────────────
+    insightsComingSoonTitle: "Insights Under Construction",
+    insightsComingSoonBody:
+      "Our engine is working in the background to analyze your study habits. Once enough data is gathered, this page will come to life with personalized insights to help you master your schedule.",
+    insightsEngineCollecting: "Engine active in background · Collecting data",
+    insightsPeriodLabel: "Period:",
+    insightsTimeFilterAria: "Select time period",
+    insightsLast7Days: "Last 7 days",
+    insightsLast30Days: "Last 30 days",
+    insightsDailyGoalsKpi: "Daily goal adherence",
+    insightsDailyGoalsKpiDesc: "Share of daily goals completed out of all goals in this period",
+    insightsTaskControlKpi: "Task control score",
+    insightsHighControlCount: "{count} tasks in high control",
+    insightsLowControlSummary: "{low} need attention · {active} active in period",
+    insightsActiveSummary: "{active} active tasks in period",
+    insightsChartTitle: "Time estimate accuracy by course",
+    insightsChartDesc: "Actual time spent vs. expected time at your current progress pace",
+    insightsChartEmpty:
+      "Not enough time data yet — keep logging work and progressing on tasks",
+    insightsChartVariance: "Variance:",
+    insightsChartTaskCount: "{count} tasks",
+    insightsLegendAccurate: "Accurate (±10%)",
+    insightsLegendOver: "Took longer (>10%)",
+    insightsLegendUnder: "Finished early (<-10%)",
+    insightsRecommendationsHeading: "What does this mean for you?",
+    insightsVarianceTitle: "Time estimate — worth updating",
+    insightsVarianceBody:
+      "We noticed that in {course} tasks take longer than planned. Consider adding a buffer to your time estimates going forward.",
+    insightsUpdatePrefs: "Update preferences",
+    insightsLowControlTitle: "Regain control of your schedule",
+    insightsLowControlBody:
+      "We noticed several tasks shifted direction or were postponed. Review your schedule and make sure the work hours you set truly support you. Sometimes all it takes is aligning work blocks with your constraints and energy to regain control.",
+    insightsReplan: "Replan schedule",
+    insightsStrongExecTitle: "Great work!",
+    insightsStrongExecBody:
+      "A high rate of daily goal completion — keep it up. Small consistent steps beat big bursts.",
+    insightsKeepGoingTitle: "Keep building your data",
+    insightsKeepGoingBody:
+      "Log work time, check off daily goals, and adjust your plan as needed — that’s how insights become more accurate.",
+    insightsGoToDashboard: "Go to daily board",
+
+    // ── Time logger (daily board) ─────────────────────────────
+    logWorkTime: "Log work time",
+    loggedWorkTimePrefix: "Logged",
+    loggedWorkTimeUpdateSuffix: "· Update",
+    timePresetReset: "0 min / Reset",
+    timePresetCompleteSuffix: "(completed)",
+    timeMinShort: "{n} min",
+    timeHourShort: "{h}h",
+    timeHourMinShort: "{h}h {m}m",
+    closeMenu: "Close menu",
   },
 
   he: {
@@ -235,6 +289,8 @@ const translations = {
     futurePlanner: "מתכנן עתידי",
     masterTasks: "משימות ראשיות",
     settings: "הגדרות",
+    insightsTitle: "תובנות",
+    insightsDesc: "מגמות, דיוק זמן ושליטה במשימות",
     collapseSidebar: "כווץ תפריט",
     expandSidebar: "הרחב תפריט",
 
@@ -453,6 +509,58 @@ const translations = {
     nextWeek: "שבוע הבא",
     calendarToday: "היום",
     loadingWeek: "טוען שבוע…",
+
+    // ── Insights ────────────────────────────────────────────
+    insightsComingSoonTitle: "התובנות שלך בבנייה",
+    insightsComingSoonBody:
+      "המנוע שלנו התחיל לעבוד ברקע ולנתח את הרגלי הלמידה שלך. ברגע שייאסף מספיק מידע, הדף הזה יתעורר לחיים עם תובנות אישיות שיעזרו לך להשיג שליטה מלאה בלוח הזמנים.",
+    insightsEngineCollecting: "המנוע פעיל ברקע · אוסף נתונים",
+    insightsPeriodLabel: "תקופה:",
+    insightsTimeFilterAria: "בחירת תקופת זמן",
+    insightsLast7Days: "שבוע אחרון",
+    insightsLast30Days: "30 ימים אחרונים",
+    insightsDailyGoalsKpi: "עמידה ביעדים היומיים",
+    insightsDailyGoalsKpiDesc: "יחס יעדים יומיים שהושלמו מתוך כלל היעדים בתקופה",
+    insightsTaskControlKpi: "מדד שליטה במשימות",
+    insightsHighControlCount: "{count} משימות בשליטה גבוהה",
+    insightsLowControlSummary: "{low} דורשות תשומת לב · {active} פעילות בתקופה",
+    insightsActiveSummary: "{active} משימות פעילות בתקופה",
+    insightsChartTitle: "דיוק הערכת זמן לפי קורס",
+    insightsChartDesc: "השוואה בין זמן בפועל לזמן הצפוי בקצב ההתקדמות הנוכחי",
+    insightsChartEmpty:
+      "אין עדיין מספיק נתוני זמן לניתוח — המשך לתעד עבודה ולהתקדם במשימות",
+    insightsChartVariance: "סטייה:",
+    insightsChartTaskCount: "{count} משימות",
+    insightsLegendAccurate: "מדויק (±10%)",
+    insightsLegendOver: "לקח יותר זמן (>10%)",
+    insightsLegendUnder: "הסתיים מוקדם (<-10%)",
+    insightsRecommendationsHeading: "מה זה אומר בשבילך?",
+    insightsVarianceTitle: "הערכת זמן — מומלץ לעדכן",
+    insightsVarianceBody:
+      "שמנו לב שב-{course} המשימות לוקחות יותר זמן מהמתוכנן. להבא, שקול להוסיף קצת באפר להערכת הזמנים.",
+    insightsUpdatePrefs: "לעדכון העדפות",
+    insightsLowControlTitle: "החזרת שליטה בלוח הזמנים",
+    insightsLowControlBody:
+      "שמנו לב שמספר משימות שינו כיוון או נדחו. מומלץ לעבור על הלו\"ז ולוודא ששעות העבודה שקבעת באמת תומכות בך. לפעמים כל מה שצריך זה להתאים את בלוקי העבודה לאילוצים ולאנרגיה שלך כדי להחזיר את השליטה.",
+    insightsReplan: "לתכנון מחדש",
+    insightsStrongExecTitle: "עבודה יפה!",
+    insightsStrongExecBody:
+      "אחוז גבוה של עמידה ביעדים היומיים — המשך באותה גישה. עקביות קטנה מנצחת bursts גדולים.",
+    insightsKeepGoingTitle: "המשך לצבור נתונים",
+    insightsKeepGoingBody:
+      "תעד זמני עבודה, סמן יעדים יומיים והתאם את התכנון לפי הצורך — כך התובנות יהיו מדויקות יותר.",
+    insightsGoToDashboard: "ללוח היומי",
+
+    // ── Time logger (daily board) ─────────────────────────────
+    logWorkTime: "תיעוד זמן עבודה",
+    loggedWorkTimePrefix: "תועדו",
+    loggedWorkTimeUpdateSuffix: "· לעדכון",
+    timePresetReset: "0 דק' / איפוס",
+    timePresetCompleteSuffix: "(הושלם)",
+    timeMinShort: "{n} דק'",
+    timeHourShort: "{h} ש'",
+    timeHourMinShort: "{h} ש' {m} דק'",
+    closeMenu: "סגור תפריט",
   },
 } as const;
 

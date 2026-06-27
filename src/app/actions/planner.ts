@@ -38,6 +38,7 @@ import type {
   LockedHistoryBlock,
 } from "@/types/database";
 import type { Task } from "@/types/database";
+import { insertTaskEvent } from "@/lib/task-events";
 
 // ── Internal types ─────────────────────────────────────────────────────────────
 
@@ -1594,6 +1595,13 @@ export async function updateBlockTime(
   const { data: { user }, error: authError } = await supabase.auth.getUser();
   if (authError || !user) return { success: false as const, error: "Not authenticated" };
 
+  const { data: existing } = await supabase
+    .from("scheduled_blocks")
+    .select("task_id, start_time, end_time, scheduled_date, kind")
+    .eq("id", blockId)
+    .eq("user_id", user.id)
+    .maybeSingle();
+
   const patch: { start_time: string; end_time: string; scheduled_date?: string } = {
     start_time: startTime,
     end_time:   endTime,
@@ -1607,6 +1615,28 @@ export async function updateBlockTime(
     .eq("user_id", user.id);
 
   if (error) return { success: false as const, error: error.message };
+
+  if (existing?.task_id && (existing.kind === "ai" || existing.kind === "manual")) {
+    const oldStart = existing.start_time.slice(0, 5);
+    const oldEnd = existing.end_time.slice(0, 5);
+    const newStart = startTime.slice(0, 5);
+    const newEnd = endTime.slice(0, 5);
+    const oldDuration = timeToMin(oldEnd) - timeToMin(oldStart);
+    const newDuration = timeToMin(newEnd) - timeToMin(newStart);
+    const durationReduced = newDuration < oldDuration;
+    const scheduleChanged =
+      oldStart !== newStart ||
+      oldEnd !== newEnd ||
+      (scheduledDate != null && existing.scheduled_date !== scheduledDate);
+
+    if (durationReduced) {
+      await insertTaskEvent(supabase, existing.task_id, "TARGET_REDUCED");
+    }
+    if (scheduleChanged && !durationReduced) {
+      await insertTaskEvent(supabase, existing.task_id, "PLAN_ADJUSTED");
+    }
+  }
+
   revalidatePath("/planner");
   revalidatePath("/", "layout");
   return { success: true as const };
@@ -2156,6 +2186,7 @@ export interface ScheduleGoalRecord {
   goalDate:                 string;
   goalId:                   string | null;
   timeLogged:               boolean;
+  actualMinutesSpent:       number;
   isFullyCompleted:         boolean;
   baselineProgressSnapshot: number | null;
 }
@@ -2231,7 +2262,7 @@ export async function loadPlannerWeekData(
       .order("start_time"),
     supabase
       .from("daily_goals")
-      .select("id, task_id, goal_date, time_logged, is_fully_completed, baseline_progress_snapshot")
+      .select("id, task_id, goal_date, time_logged, actual_minutes_spent, is_fully_completed, baseline_progress_snapshot")
       .eq("user_id", user.id),
     supabase
       .from("scheduled_blocks")
@@ -2341,6 +2372,7 @@ export async function loadPlannerWeekData(
     goalDate:                 toDateKey(g.goal_date),
     goalId:                   g.id as string,
     timeLogged:               g.time_logged,
+    actualMinutesSpent:       Math.max(0, (g.actual_minutes_spent as number | null) ?? 0),
     isFullyCompleted:         g.is_fully_completed,
     baselineProgressSnapshot: g.baseline_progress_snapshot ?? null,
   }));

@@ -37,6 +37,7 @@ export interface CumulativeBlockIndex {
 export interface GoalRecord {
   goalId:                    string | null;
   timeLogged:                boolean;
+  actualMinutesSpent:        number;
   isFullyCompleted:          boolean;
   baselineProgressSnapshot:  number | null;
 }
@@ -425,7 +426,8 @@ export function liveGoalEntriesToTableRows(
       targetMinutes:       e.scheduledMinutes,
       cumulativeTargetPct: e.plannedPct,
       registryProgressPct: Math.min(100, Math.max(0, Math.round(task?.progress ?? 0))),
-      timeLogged:          rec?.timeLogged ?? false,
+      actualMinutesSpent:  rec?.actualMinutesSpent ?? 0,
+      timeLogged:          (rec?.actualMinutesSpent ?? 0) > 0,
       isFullyCompleted:    rec?.isFullyCompleted ?? false,
       goalTitle:           `${e.taskTitle} — ${e.plannedPct}%`,
     };

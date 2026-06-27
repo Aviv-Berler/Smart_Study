@@ -3,6 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { createClient } from "@/utils/supabase/server";
 import { todayDateString } from "@/lib/drift-detection";
+import { insertDailyGoalMetEvent } from "@/lib/task-events";
 
 export async function getTodayGoals(goalDate: string = todayDateString()) {
   const supabase = await createClient();
@@ -13,7 +14,7 @@ export async function getTodayGoals(goalDate: string = todayDateString()) {
     .from("daily_goals")
     .select(
       "id, user_id, task_id, title, goal_date, target_minutes, time_logged, " +
-      "is_fully_completed, baseline_progress_snapshot, created_at, updated_at, " +
+      "actual_minutes_spent, is_fully_completed, baseline_progress_snapshot, created_at, updated_at, " +
       "tasks(id, title, course_name, estimated_duration, status)",
     )
     .eq("user_id", user.id)
@@ -24,18 +25,21 @@ export async function getTodayGoals(goalDate: string = todayDateString()) {
 }
 
 /**
- * Upsert the `time_logged` flag only (does NOT affect task progress or parent completion).
- * `goalDate` must be the user's local calendar day (from client todayDateString()).
+ * Absolute overwrite of logged work minutes for a task on a given day.
+ * Does NOT modify task.progress or is_fully_completed.
  */
-export async function logTimeSession(
+export async function setLoggedWorkMinutes(
   taskId: string,
-  timeLogged: boolean,
+  minutes: number,
   goalDate: string = todayDateString(),
   scheduledMinutes?: number,
 ) {
   const supabase = await createClient();
   const { data: { user }, error: authError } = await supabase.auth.getUser();
   if (authError || !user) return { error: "Not authenticated" };
+
+  const absoluteMinutes = Math.max(0, Math.round(minutes));
+  const timeLogged      = absoluteMinutes > 0;
 
   const { data: existing } = await supabase
     .from("daily_goals")
@@ -48,7 +52,11 @@ export async function logTimeSession(
   if (existing?.id) {
     const { error } = await supabase
       .from("daily_goals")
-      .update({ time_logged: timeLogged, updated_at: new Date().toISOString() })
+      .update({
+        actual_minutes_spent: absoluteMinutes,
+        time_logged:          timeLogged,
+        updated_at:           new Date().toISOString(),
+      })
       .eq("id", existing.id)
       .eq("user_id", user.id);
 
@@ -62,12 +70,13 @@ export async function logTimeSession(
       .single();
 
     const { error } = await supabase.from("daily_goals").insert({
-      user_id:        user.id,
-      task_id:        taskId,
-      goal_date:      goalDate,
-      target_minutes: scheduledMinutes ?? task?.estimated_duration ?? 60,
-      time_logged:    timeLogged,
-      updated_at:     new Date().toISOString(),
+      user_id:              user.id,
+      task_id:              taskId,
+      goal_date:            goalDate,
+      target_minutes:       scheduledMinutes ?? task?.estimated_duration ?? 60,
+      actual_minutes_spent: absoluteMinutes,
+      time_logged:          timeLogged,
+      updated_at:           new Date().toISOString(),
     });
 
     if (error) return { error: error.message };
@@ -75,7 +84,25 @@ export async function logTimeSession(
 
   revalidatePath("/");
   revalidatePath("/", "layout");
-  return { success: true as const };
+  return { success: true as const, actualMinutesSpent: absoluteMinutes };
+}
+
+/**
+ * @deprecated Use setLoggedWorkMinutes for absolute minute logging.
+ * Upsert the `time_logged` flag only (boolean legacy toggle).
+ */
+export async function logTimeSession(
+  taskId: string,
+  timeLogged: boolean,
+  goalDate: string = todayDateString(),
+  scheduledMinutes?: number,
+) {
+  if (!timeLogged) {
+    return setLoggedWorkMinutes(taskId, 0, goalDate, scheduledMinutes);
+  }
+
+  const target = scheduledMinutes ?? 60;
+  return setLoggedWorkMinutes(taskId, target, goalDate, scheduledMinutes);
 }
 
 export interface CompleteDailyGoalSnapshot {
@@ -101,7 +128,7 @@ export async function completeDailyGoal(
 
   const { data: goal, error: fetchErr } = await supabase
     .from("daily_goals")
-    .select("id, task_id, baseline_progress_snapshot")
+    .select("id, task_id, goal_date, baseline_progress_snapshot")
     .eq("id", goalId)
     .eq("user_id", user.id)
     .single();
@@ -128,6 +155,8 @@ export async function completeDailyGoal(
     if (goalErr) return { error: goalErr.message };
 
     if (goal.task_id) {
+      await insertDailyGoalMetEvent(supabase, goal.task_id, goal.goal_date);
+
       const { error: taskErr } = await supabase
         .from("tasks")
         .update({ progress: target, status: newStatus, updated_at: new Date().toISOString() })
