@@ -72,6 +72,10 @@ export interface Task {
   source: string;
   /** User-defined order from Manage → Edit Priority (lower = higher priority) */
   user_priority_index: number | null;
+  /** Set when a completed task is hidden from the Data Entry backlog (analytics preserved) */
+  backlog_hidden_at: string | null;
+  /** Set when an active task with history is aborted (analytics preserved) */
+  deleted_at: string | null;
   created_at: string;
   updated_at: string;
 }

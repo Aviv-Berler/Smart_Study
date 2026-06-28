@@ -61,6 +61,7 @@ const translations = {
     tasksDesc: "All your deadlines and assignments",
     activeTasks: "Active Tasks",
     deleteTask: "Delete task",
+    removeFromList: "Remove from list",
 
     // ── Settings Page ───────────────────────────────────────
     settingsTitle: "Settings",
@@ -342,6 +343,7 @@ const translations = {
     tasksDesc: "כל המטלות והדדליינים במקום אחד",
     activeTasks: "משימות פעילות",
     deleteTask: "מחק משימה",
+    removeFromList: "הסר מהרשימה",
 
     // ── Settings Page ───────────────────────────────────────
     settingsTitle: "הגדרות",

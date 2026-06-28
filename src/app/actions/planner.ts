@@ -1162,6 +1162,7 @@ export async function generateSchedulePlan(
       .select("id, title, course_name, due_date, estimated_duration, progress, user_priority_index")
       .eq("user_id", user.id)
       .neq("status", "archived")
+      .is("deleted_at", null)
       .lt("progress", 100)
       .order("due_date", { ascending: true, nullsFirst: false }),
     supabase

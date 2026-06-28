@@ -383,6 +383,7 @@ export function computeUpcomingMilestones(
   return tasks
     .filter((t) => {
       if (!t.due_date) return false;
+      if (t.deleted_at) return false;
       if (t.status === "completed") return false;
       if ((t.progress ?? 0) >= 100) return false;
       return normalizeDueDateKey(t.due_date) != null;

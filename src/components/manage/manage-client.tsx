@@ -674,12 +674,14 @@ function TaskRowMobileMenu({
   deleting,
   onDelete,
   onDueDateChange,
+  deleteActionKey = "deleteTask",
 }: {
   task: Task;
   locale: "en" | "he";
   deleting: boolean;
   onDelete: () => void;
   onDueDateChange?: (id: string, dueDate: string | null) => void;
+  deleteActionKey?: "deleteTask" | "removeFromList";
 }) {
   const { translate } = useLanguage();
   const [open, setOpen] = useState(false);
@@ -738,7 +740,7 @@ function TaskRowMobileMenu({
                 ) : (
                   <Trash2 className="h-3.5 w-3.5" />
                 )}
-                {translate("deleteTask")}
+                {translate(deleteActionKey)}
               </Button>
             </div>
           </div>
@@ -756,12 +758,14 @@ function TaskRow({
   onProgressChange,
   onDueDateChange,
   onEstimatedDurationChange,
+  deleteActionKey = "deleteTask",
 }: {
   task: Task;
   onDelete: (id: string) => void;
   onProgressChange?: (id: string, progress: number) => void;
   onDueDateChange?: (id: string, dueDate: string | null) => void;
   onEstimatedDurationChange?: (id: string, minutes: number | null) => void;
+  deleteActionKey?: "deleteTask" | "removeFromList";
 }) {
   const router = useRouter();
   const { translate, locale } = useLanguage();
@@ -828,7 +832,7 @@ function TaskRow({
             onClick={handleDelete}
             disabled={deleting}
             className="p-1 text-muted-foreground hover:text-destructive transition-colors disabled:opacity-40"
-            title={translate("deleteTask")}
+            title={translate(deleteActionKey)}
           >
             {deleting ? (
               <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -845,6 +849,7 @@ function TaskRow({
           deleting={deleting}
           onDelete={handleDelete}
           onDueDateChange={onDueDateChange}
+          deleteActionKey={deleteActionKey}
         />
       </CardContent>
     </Card>
@@ -951,8 +956,12 @@ export function ManageClient({
     });
   };
 
-  const activeTasks    = sortTasksByDisplayOrder(tasks.filter((t) => (t.progress ?? 0) < 100));
-  const completedTasks = tasks.filter((t) => (t.progress ?? 0) >= 100);
+  const activeTasks    = sortTasksByDisplayOrder(
+    tasks.filter((t) => (t.progress ?? 0) < 100 && !t.deleted_at),
+  );
+  const completedTasks = tasks.filter(
+    (t) => (t.progress ?? 0) >= 100 && !t.backlog_hidden_at,
+  );
 
   return (
     <div className="space-y-8 p-4 sm:p-6">
@@ -1066,6 +1075,7 @@ export function ManageClient({
               <TaskRow
                 key={task.id}
                 task={task}
+                deleteActionKey="removeFromList"
                 onDelete={handleTaskDelete}
                 onProgressChange={handleTaskProgress}
                 onDueDateChange={handleTaskDueDate}

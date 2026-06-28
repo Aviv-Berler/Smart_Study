@@ -2,8 +2,24 @@
 
 import { revalidatePath } from "next/cache";
 import { createClient } from "@/utils/supabase/server";
+import { createAdminClient } from "@/utils/supabase/admin";
 import { sortTasksByDisplayOrder } from "@/lib/task-sort";
 import { insertTaskEvent } from "@/lib/task-events";
+import {
+  deleteEmptyDailyGoalsForTask,
+  taskHasAccruedAnalytics,
+} from "@/lib/task-retention";
+import { todayDateString } from "@/lib/drift-detection";
+import type { Task } from "@/types/database";
+
+export type DeleteTaskMode = "backlog_hidden" | "soft_deleted" | "hard_deleted";
+
+function revalidateTaskSurfaces() {
+  revalidatePath("/", "layout");
+  revalidatePath("/tasks");
+  revalidatePath("/manage");
+  revalidatePath("/planner");
+}
 
 export interface AddTaskInput {
   title: string;
@@ -40,9 +56,7 @@ export async function addTask(data: AddTaskInput) {
 
   if (error) return { error: error.message };
 
-  revalidatePath("/", "layout");
-  revalidatePath("/tasks");
-  revalidatePath("/manage");
+  revalidateTaskSurfaces();
   return { success: true, task };
 }
 
@@ -65,9 +79,7 @@ export async function updateTaskProgress(taskId: string, progress: number) {
 
   if (error) return { error: error.message };
 
-  revalidatePath("/", "layout");
-  revalidatePath("/tasks");
-  revalidatePath("/manage");
+  revalidateTaskSurfaces();
   return { success: true as const };
 }
 
@@ -114,10 +126,7 @@ export async function updateTaskEstimatedDuration(
     await insertTaskEvent(supabase, taskId, "TARGET_REDUCED");
   }
 
-  revalidatePath("/", "layout");
-  revalidatePath("/tasks");
-  revalidatePath("/manage");
-  revalidatePath("/planner");
+  revalidateTaskSurfaces();
   return { success: true as const };
 }
 
@@ -141,10 +150,7 @@ export async function updateTaskDueDate(taskId: string, dueDate: string | null) 
 
   if (error) return { error: error.message };
 
-  revalidatePath("/", "layout");
-  revalidatePath("/tasks");
-  revalidatePath("/manage");
-  revalidatePath("/planner");
+  revalidateTaskSurfaces();
   return { success: true };
 }
 
@@ -167,12 +173,16 @@ export async function updateTaskStatus(
 
   if (error) return { error: error.message };
 
-  revalidatePath("/", "layout");
-  revalidatePath("/tasks");
-  revalidatePath("/manage");
+  revalidateTaskSurfaces();
   return { success: true };
 }
 
+/**
+ * Conditional delete — preserves analytics history.
+ * A: completed → backlog_hidden_at
+ * B: active + accrued data → deleted_at
+ * C: active + no data → hard DELETE
+ */
 export async function deleteTask(taskId: string) {
   const supabase = await createClient();
   const {
@@ -181,21 +191,114 @@ export async function deleteTask(taskId: string) {
   } = await supabase.auth.getUser();
   if (authError || !user) return { error: "Not authenticated" };
 
-  const { error } = await supabase
+  const { data: task, error: fetchError } = await supabase
+    .from("tasks")
+    .select("id, progress, backlog_hidden_at, deleted_at")
+    .eq("id", taskId)
+    .eq("user_id", user.id)
+    .single();
+
+  if (fetchError || !task) return { error: fetchError?.message ?? "Task not found" };
+
+  const now = new Date().toISOString();
+  const progress = task.progress ?? 0;
+
+  if (progress >= 100) {
+    if (task.backlog_hidden_at) {
+      revalidateTaskSurfaces();
+      return { success: true as const, mode: "backlog_hidden" as DeleteTaskMode };
+    }
+
+    const { error } = await supabase
+      .from("tasks")
+      .update({ backlog_hidden_at: now, updated_at: now })
+      .eq("id", taskId)
+      .eq("user_id", user.id);
+
+    if (error) return { error: error.message };
+    revalidateTaskSurfaces();
+    return { success: true as const, mode: "backlog_hidden" as DeleteTaskMode };
+  }
+
+  const hasAccrued = await taskHasAccruedAnalytics(supabase, taskId);
+  if (hasAccrued) {
+    if (task.deleted_at) {
+      revalidateTaskSurfaces();
+      return { success: true as const, mode: "soft_deleted" as DeleteTaskMode };
+    }
+
+    const { error } = await supabase
+      .from("tasks")
+      .update({ deleted_at: now, updated_at: now })
+      .eq("id", taskId)
+      .eq("user_id", user.id);
+
+    if (error) return { error: error.message };
+    revalidateTaskSurfaces();
+    return { success: true as const, mode: "soft_deleted" as DeleteTaskMode };
+  }
+
+  await deleteEmptyDailyGoalsForTask(supabase, taskId, user.id);
+
+  const { error: deleteError } = await supabase
     .from("tasks")
     .delete()
     .eq("id", taskId)
     .eq("user_id", user.id);
 
-  if (error) return { error: error.message };
+  if (deleteError) {
+    console.warn("[deleteTask] hard delete blocked, falling back to soft delete:", deleteError.message);
+    const { error: softError } = await supabase
+      .from("tasks")
+      .update({ deleted_at: now, updated_at: now })
+      .eq("id", taskId)
+      .eq("user_id", user.id);
 
-  revalidatePath("/", "layout");
-  revalidatePath("/tasks");
-  revalidatePath("/manage");
-  return { success: true };
+    if (softError) return { error: softError.message };
+    revalidateTaskSurfaces();
+    return { success: true as const, mode: "soft_deleted" as DeleteTaskMode };
+  }
+
+  revalidateTaskSurfaces();
+  return { success: true as const, mode: "hard_deleted" as DeleteTaskMode };
 }
 
-/** Active tasks only — used for dashboard daily board and planner view */
+/**
+ * Cron / Edge Function entry point — auto-hide expired completed tasks.
+ * Requires CRON_SECRET and SUPABASE_SERVICE_ROLE_KEY. Not called from page loads.
+ */
+export async function autoArchiveExpiredTasks(cronSecret: string) {
+  const expected = process.env.CRON_SECRET;
+  if (!expected || cronSecret !== expected) {
+    return { error: "Unauthorized" as const };
+  }
+
+  try {
+    const supabase = createAdminClient();
+    const today = todayDateString();
+
+    const { data, error } = await supabase
+      .from("tasks")
+      .update({
+        backlog_hidden_at: new Date().toISOString(),
+        updated_at:        new Date().toISOString(),
+      })
+      .gte("progress", 100)
+      .not("due_date", "is", null)
+      .lt("due_date", today)
+      .is("backlog_hidden_at", null)
+      .select("id");
+
+    if (error) return { error: error.message };
+
+    return { success: true as const, archivedCount: data?.length ?? 0 };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Admin client unavailable";
+    return { error: message };
+  }
+}
+
+/** Active tasks only — excludes aborted soft-deletes (dashboard fallback lists) */
 export async function getTasks() {
   const supabase = await createClient();
   const {
@@ -208,12 +311,16 @@ export async function getTasks() {
     .from("tasks")
     .select("*")
     .eq("user_id", user.id)
-    .in("status", ["pending", "in_progress"]);
+    .in("status", ["pending", "in_progress"])
+    .is("deleted_at", null);
 
   return sortTasksByDisplayOrder(data ?? []);
 }
 
-/** All non-archived tasks — used for manage/tasks pages (shows completed too) */
+/**
+ * All non-legacy-archived tasks for Manage — includes soft-deleted/hidden rows.
+ * UI filters backlog_hidden_at / deleted_at client-side.
+ */
 export async function getAllTasks() {
   const supabase = await createClient();
   const {
@@ -229,6 +336,25 @@ export async function getAllTasks() {
     .neq("status", "archived");
 
   return sortTasksByDisplayOrder(data ?? []);
+}
+
+/** External sync lookup — includes soft-deleted/hidden tasks to prevent duplicates. */
+export async function findTaskBySparkId(sparkId: string): Promise<Task | null> {
+  const supabase = await createClient();
+  const {
+    data: { user },
+    error: authError,
+  } = await supabase.auth.getUser();
+  if (authError || !user || !sparkId.trim()) return null;
+
+  const { data } = await supabase
+    .from("tasks")
+    .select("*")
+    .eq("user_id", user.id)
+    .eq("spark_id", sparkId.trim())
+    .maybeSingle();
+
+  return (data as Task | null) ?? null;
 }
 
 /** Persist drag-and-drop task order from Manage → Edit Priority */
@@ -252,9 +378,7 @@ export async function updateTaskPriorityOrder(orderedTaskIds: string[]) {
   const failed = results.find((r) => r.error);
   if (failed?.error) return { error: failed.error.message };
 
-  revalidatePath("/", "layout");
-  revalidatePath("/manage");
-  revalidatePath("/planner");
+  revalidateTaskSurfaces();
   return { success: true as const };
 }
 
@@ -274,9 +398,7 @@ export async function resetTaskPriorities() {
 
   if (error) return { error: error.message };
 
-  revalidatePath("/", "layout");
-  revalidatePath("/manage");
-  revalidatePath("/planner");
+  revalidateTaskSurfaces();
   return { success: true as const };
 }
 

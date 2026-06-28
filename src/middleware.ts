@@ -40,8 +40,11 @@ export async function middleware(request: NextRequest) {
   // if middleware redirects first, the session is never established.
   const isAuthRoute = pathname.startsWith("/auth/");
 
-  // Unauthenticated → redirect to login (skip auth routes and login itself)
-  if (!user && !isLoginPage && !isAuthRoute) {
+  // Cron routes authenticate via CRON_SECRET — no Supabase session required
+  const isCronRoute = pathname.startsWith("/api/cron/");
+
+  // Unauthenticated → redirect to login (skip auth routes, cron, and login itself)
+  if (!user && !isLoginPage && !isAuthRoute && !isCronRoute) {
     const loginUrl = new URL("/login", request.url);
     return NextResponse.redirect(loginUrl);
   }

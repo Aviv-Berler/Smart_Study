@@ -235,6 +235,8 @@ export function PlannerClient({ initialCourses, initialTasks }: Props) {
   const [tasks, setTasks] = useState<Task[]>(initialTasks);
   const [activeTab, setActiveTab] = useState<"task" | "course">("course");
 
+  const visibleTasks = tasks.filter((t) => !t.deleted_at);
+
   const handleCourseDelete = (id: string) =>
     setCourses((prev) => prev.filter((c) => c.id !== id));
 
@@ -291,10 +293,10 @@ export function PlannerClient({ initialCourses, initialTasks }: Props) {
         <div className="flex items-center gap-2">
           <ListChecks className="h-5 w-5 text-primary" />
           <h2 className="text-lg font-semibold">{translate("myActiveTasks")}</h2>
-          <LtrIsolate className="text-sm text-muted-foreground">({tasks.length})</LtrIsolate>
+          <LtrIsolate className="text-sm text-muted-foreground">({visibleTasks.length})</LtrIsolate>
         </div>
 
-        {tasks.length === 0 ? (
+        {visibleTasks.length === 0 ? (
           <Card className="border-dashed">
             <CardContent className="flex flex-col items-center gap-2 py-10 text-center">
               <ListChecks className="h-8 w-8 text-muted-foreground" />
@@ -305,7 +307,7 @@ export function PlannerClient({ initialCourses, initialTasks }: Props) {
           </Card>
         ) : (
           <div className="space-y-2">
-            {tasks.map((task) => (
+            {visibleTasks.map((task) => (
               <TaskRow
                 key={task.id}
                 task={task}
