@@ -198,7 +198,7 @@ export async function getSchedulesForToday(): Promise<TodaySlot[]> {
 
   if (!data) return [];
 
-  return data.map((row) => ({
+  const slots = data.map((row) => ({
     id: row.id,
     courseName:
       ((row.courses as unknown) as { course_name: string } | null)
@@ -207,4 +207,21 @@ export async function getSchedulesForToday(): Promise<TodaySlot[]> {
     startTime: row.start_time.slice(0, 5), // "HH:MM"
     duration: row.duration,
   }));
+
+  // #region agent log
+  fetch("http://127.0.0.1:7896/ingest/77050572-b00b-46d6-b0e9-fc65b92d4866", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "a83934" },
+    body: JSON.stringify({
+      sessionId: "a83934",
+      hypothesisId: "H1",
+      location: "courses.ts:getSchedulesForToday",
+      message: "raw recurring schedules for today",
+      data: { todayDow, count: slots.length, slots: slots.map((s) => ({ id: s.id, start: s.startTime, name: s.courseName })) },
+      timestamp: Date.now(),
+    }),
+  }).catch(() => {});
+  // #endregion
+
+  return slots;
 }

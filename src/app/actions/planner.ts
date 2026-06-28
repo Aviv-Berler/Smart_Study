@@ -2465,7 +2465,7 @@ export async function getTodayStudyBlocks(forDate: string = todayDateString()): 
 
   if (!data) return [];
 
-  return data.map(row => {
+  const slots = data.map(row => {
     const task = (row.tasks as unknown) as {
       title: string | null;
       course_name: string | null;
@@ -2486,4 +2486,21 @@ export async function getTodayStudyBlocks(forDate: string = todayDateString()): 
       title:      row.title as string,
     };
   });
+
+  // #region agent log
+  fetch("http://127.0.0.1:7896/ingest/77050572-b00b-46d6-b0e9-fc65b92d4866", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "a83934" },
+    body: JSON.stringify({
+      sessionId: "a83934",
+      hypothesisId: "H2",
+      location: "planner.ts:getTodayStudyBlocks",
+      message: "study blocks only query result",
+      data: { todayStr, count: slots.length, kinds: ["ai", "manual"], slotIds: slots.map((s) => s.id) },
+      timestamp: Date.now(),
+    }),
+  }).catch(() => {});
+  // #endregion
+
+  return slots;
 }

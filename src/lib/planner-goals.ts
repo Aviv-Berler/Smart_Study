@@ -343,11 +343,12 @@ export function computeLiveDailyGoals(
       let plannedPct: number;
       let finishedPct: number;
 
+      const scheduled = getScheduledTargetAtDate(scheduleIndex, taskId, dayStr, task);
+
       if (isFullyDone) {
         plannedPct  = getBaseProgressPct(task);
         finishedPct = getBaseProgressPct(task);
       } else {
-        const scheduled = getScheduledTargetAtDate(scheduleIndex, taskId, dayStr, task);
         plannedPct      = scheduled.targetPct;
         finishedPct     = getActualProgressAtDate(loggedIndex, taskId, dayStr, task);
       }

@@ -1,5 +1,5 @@
-import { normalizeTimeKey } from "@/lib/plan-horizon";
-import type { CalendarBlock, ScheduleType } from "@/types/database";
+import { normalizeTimeKey, toDateKey } from "@/lib/plan-horizon";
+import type { CalendarBlock, ScheduleType, TodaySlot } from "@/types/database";
 
 /** Recurring university class rule from `schedules` + joined course name */
 export interface ScheduleRule {
@@ -233,4 +233,57 @@ export function buildClassBusyByDate(params: {
   }
 
   return map;
+}
+
+function agendaDurationMinutes(startTime: string, endTime: string): number {
+  const toMin = (t: string) => {
+    const [h, m] = normalizeTimeKey(t).split(":").map(Number);
+    return h * 60 + (m || 0);
+  };
+  return Math.max(0, toMin(endTime) - toMin(startTime));
+}
+
+/**
+ * Build the dashboard Daily Schedule from merged planner calendar blocks.
+ * Includes virtual/fixed classes, class_override (moved makeup), and locked study blocks.
+ */
+export function buildTodayAgendaFromCalendarBlocks(
+  blocks: CalendarBlock[],
+  todayStr: string,
+): TodaySlot[] {
+  const slots: TodaySlot[] = [];
+
+  for (const block of blocks) {
+    if (toDateKey(block.scheduled_date) !== todayStr) continue;
+
+    const startTime = normalizeTimeKey(block.start_time);
+    const endTime   = normalizeTimeKey(block.end_time);
+    const duration  = agendaDurationMinutes(startTime, endTime);
+
+    if (block.kind === "fixed" || block.kind === "class_override") {
+      slots.push({
+        id:         block.id,
+        courseName: block.title,
+        type:       (block.schedule_type ?? "lecture") as ScheduleType,
+        startTime,
+        duration,
+        kind:       "course",
+      });
+      continue;
+    }
+
+    if ((block.kind === "ai" || block.kind === "manual") && block.is_locked) {
+      slots.push({
+        id:         block.id,
+        courseName: block.title,
+        type:       "study",
+        startTime,
+        duration,
+        kind:       "study",
+        title:      block.title,
+      });
+    }
+  }
+
+  return slots.sort((a, b) => a.startTime.localeCompare(b.startTime));
 }
