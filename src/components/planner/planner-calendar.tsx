@@ -83,6 +83,12 @@ const TOTAL_HEIGHT = HOURS.length * HOUR_HEIGHT;
 const SNAP_MIN     = 15; // snap to 15-minute increments
 const MIN_DURATION = 15; // minimum block duration in minutes
 
+/** Planner conflict/warning toasts — persist until the user dismisses manually. */
+const PLANNER_ALERT_TOAST = {
+  duration: Infinity,
+  closeButton: true,
+} as const;
+
 
 function hhmm(s: string): number {
   const normalized = normalizeTimeKey(s);
@@ -1035,7 +1041,7 @@ function SmartSyncCard({
       }
       if (result.status === "conflict") {
         setConflict({ message: result.message, options: result.options });
-        toast.warning(translate("conflictWarning"));
+        toast.warning(translate("conflictWarning"), PLANNER_ALERT_TOAST);
         return;
       }
       const count = result.block_count ?? 0;
@@ -1043,7 +1049,7 @@ function SmartSyncCard({
         `${isolateLtr(count)} ${count !== 1 ? translate("blocksScheduled") : translate("blockScheduled")}`,
       );
       if (result.warnings?.length) {
-        for (const w of result.warnings) toast.warning(w);
+        for (const w of result.warnings) toast.warning(w, PLANNER_ALERT_TOAST);
       }
       setAiMessage(result.ai_message ?? null);
       setConstraints("");
