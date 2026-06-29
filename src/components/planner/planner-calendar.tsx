@@ -34,12 +34,20 @@ import { useLanguage } from "@/components/providers/language-provider";
 import { useSidebar } from "@/components/layout/sidebar-context";
 import { useOnboardingOptional } from "@/components/providers/onboarding-provider";
 import { usePlannerSchedule } from "@/components/providers/planner-schedule-provider";
+import { useUser } from "@/components/providers/user-provider";
 import {
   buildTimelineBlocks,
   computeLiveDailyGoals,
   normalizeCalendarBlock,
   type LiveDailyGoalEntry,
 } from "@/lib/planner-goals";
+import {
+  filterBlocksAfterPlannerReset,
+  getPlannerClock,
+  PLANNER_DEFAULT_TIMEZONE,
+  protectedTaskIdsFromGoalRecords,
+  resolvePlannerTimezone,
+} from "@/lib/planner-reset";
 import {
   AutoDirText,
   LtrIsolate,
@@ -56,7 +64,6 @@ import {
 import {
   getBlockInteractivity,
   isMissedBlock,
-  todayDateString,
 } from "@/lib/drift-detection";
 import type {
   CalendarBlock,
@@ -206,7 +213,7 @@ function Toolbar({
           size="sm"
           onClick={onReset}
           disabled={resetting}
-          title="Reset schedule — clears AI blocks from today forward"
+          title="Reset schedule — clears future AI blocks from now forward"
           className="gap-1.5 text-muted-foreground hover:border-destructive/60 hover:text-destructive hover:bg-destructive/5"
         >
           {resetting
@@ -545,6 +552,7 @@ function CalendarGrid({
   blocks,
   weeklyGoals,
   completedGoalKeys,
+  todayStr,
   onBlockDrop,
   onBlockResize,
   onBlockDelete,
@@ -557,13 +565,14 @@ function CalendarGrid({
   /** Per-day goal entries (index 0 = days[0], …). undefined hides the summary row. */
   weeklyGoals?:   LiveDailyGoalEntry[][];
   completedGoalKeys: Set<string>;
+  /** Profile-timezone calendar day — matches server reset semantics */
+  todayStr:       string;
   onBlockDrop?:   (blockId: string, newDate: string, newStart: string, newEnd: string) => void;
   onBlockResize?: (blockId: string, newEnd: string) => void;
   onBlockDelete?: (blockId: string) => void;
   onBlockEdit?:   (block: CalendarBlock) => void;
 }) {
   const { translate, locale } = useLanguage();
-  const todayStr = todayDateString();
   const today    = new Date();
   const colCount = days.length;
 
@@ -1239,9 +1248,17 @@ export function PlannerCalendar({
   const { translate } = useLanguage();
   const { toggleMobileMenu } = useSidebar();
   const onboarding = useOnboardingOptional();
-  const { syncBlocks, applyWeekData: applyScheduleWeekData, progressBlocks, sessionLoggedKeys, fullyCompletedGoalKeys, completedGoalKeys: providerCompletedGoalKeys, tasks: providerTasks } = usePlannerSchedule();
+  const { profile } = useUser();
+  const { syncBlocks, applyWeekData: applyScheduleWeekData, progressBlocks, sessionLoggedKeys, fullyCompletedGoalKeys, completedGoalKeys: providerCompletedGoalKeys, tasks: providerTasks, goalRecords } = usePlannerSchedule();
 
-  const [todayKey, setTodayKey] = useState(() => todayDateString());
+  const plannerTimeZone = useMemo(
+    () => resolvePlannerTimezone(profile?.timezone),
+    [profile?.timezone],
+  );
+
+  const [todayKey, setTodayKey] = useState(() =>
+    getPlannerClock(PLANNER_DEFAULT_TIMEZONE).todayStr,
+  );
   const todayKeyRef = useRef(todayKey);
 
   const [weekAnchor, setWeekAnchor] = useState<Date>(() => parseLocalDate(initialWeekStart));
@@ -1309,10 +1326,18 @@ export function PlannerCalendar({
     router.refresh();
   }, [refreshCurrentWeek, router]);
 
-  // Midnight rollover — refetch week blocks when the local calendar day changes.
+  // Keep todayKey aligned with profile timezone (same as server reset semantics).
+  useEffect(() => {
+    const next = getPlannerClock(plannerTimeZone).todayStr;
+    if (next === todayKeyRef.current) return;
+    todayKeyRef.current = next;
+    setTodayKey(next);
+  }, [plannerTimeZone]);
+
+  // Midnight rollover — refetch week blocks when the profile-timezone calendar day changes.
   useEffect(() => {
     const tick = () => {
-      const next = todayDateString();
+      const next = getPlannerClock(plannerTimeZone).todayStr;
       if (next === todayKeyRef.current) return;
       todayKeyRef.current = next;
       setTodayKey(next);
@@ -1332,7 +1357,7 @@ export function PlannerCalendar({
       window.clearInterval(id);
       document.removeEventListener("visibilitychange", onVisibility);
     };
-  }, [refreshCurrentWeek]);
+  }, [refreshCurrentWeek, plannerTimeZone]);
 
   // Client fetch on mount — SSR props may be empty/stale; this matches post-AI refresh path.
   useEffect(() => {
@@ -1486,7 +1511,9 @@ export function PlannerCalendar({
 
   const handleResetWeek = async () => {
     setResetting(true);
-    const result = await clearPlannerRange(todayKey);
+    const clock = getPlannerClock(plannerTimeZone);
+    const protectedTaskIds = protectedTaskIdsFromGoalRecords(goalRecords, clock.todayStr);
+    const result = await clearPlannerRange(clock.todayStr);
     setResetting(false);
 
     if (!result.success) {
@@ -1494,9 +1521,8 @@ export function PlannerCalendar({
       return;
     }
 
-    // Forward-only: never remove historical AI blocks
     setLocalBlocks((prev) =>
-      prev.filter((b) => b.kind !== "ai" || b.scheduled_date < todayKey),
+      filterBlocksAfterPlannerReset(prev, clock.todayStr, clock.nowMin, protectedTaskIds),
     );
     toast.success(`${translate("boardCleared")} (${isolateLtr(result.deleted ?? 0)})`);
     router.refresh();
@@ -1887,6 +1913,7 @@ export function PlannerCalendar({
           blocks={timelineBlocks}
           weeklyGoals={weeklyGoalsByDay}
           completedGoalKeys={completedGoals}
+          todayStr={todayKey}
           onBlockDrop={handleBlockDrop}
           onBlockResize={handleBlockResize}
           onBlockDelete={handleBlockDelete}

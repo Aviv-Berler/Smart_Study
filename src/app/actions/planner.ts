@@ -15,6 +15,13 @@ import {
   type ClassInstanceRow,
   type ScheduleRule,
 } from "@/lib/schedule-merge";
+import {
+  buildProtectedTaskIdsForDay,
+  getClockInTimezone,
+  PLANNER_DEFAULT_TIMEZONE,
+  resolvePlannerTimezone,
+  shouldDeleteAiBlockOnReset,
+} from "@/lib/planner-reset";
 import { isolateLtr } from "@/lib/bidi";
 import {
   buildCompletedGoalKeys,
@@ -2408,7 +2415,9 @@ export async function loadPlannerWeekData(
 
 // ── clearPlannerRange ─────────────────────────────────────────────────────────
 /**
- * Wipes AI scheduled_blocks (draft + approved) from startDate forward.
+ * Wipes future AI scheduled_blocks (draft + approved) from startDate forward.
+ * Past calendar days are never touched. Today: only not-yet-started blocks
+ * (by user timezone) unless the task has logged/completed daily goals.
  * Manual blocks and fixed courses are never touched.
  */
 export async function clearPlannerRange(startDate: string, _endDate?: string) {
@@ -2416,22 +2425,72 @@ export async function clearPlannerRange(startDate: string, _endDate?: string) {
   const { data: { user }, error: authError } = await supabase.auth.getUser();
   if (authError || !user) return { success: false as const, error: "Not authenticated" };
 
-  const todayStr = todayDateString();
+  const { data: profile } = await supabase
+    .from("profiles")
+    .select("timezone")
+    .eq("id", user.id)
+    .maybeSingle();
+
+  const timeZone = resolvePlannerTimezone(profile?.timezone);
+  const { todayStr, nowMin } = getClockInTimezone(timeZone);
   const effectiveStart = startDate < todayStr ? todayStr : startDate;
 
-  const { count: total } = await supabase
+  const { data: todayGoals, error: goalsErr } = await supabase
+    .from("daily_goals")
+    .select("task_id, actual_minutes_spent, is_fully_completed")
+    .eq("user_id", user.id)
+    .eq("goal_date", todayStr);
+
+  if (goalsErr) {
+    return { success: false as const, error: goalsErr.message };
+  }
+
+  const protectedTaskIds = buildProtectedTaskIdsForDay(
+    (todayGoals ?? []).map((g) => ({
+      taskId:             String(g.task_id),
+      actualMinutesSpent: (g.actual_minutes_spent as number | null) ?? 0,
+      isFullyCompleted:   Boolean(g.is_fully_completed),
+    })),
+  );
+
+  const { data: aiBlocks, error: fetchErr } = await supabase
     .from("scheduled_blocks")
-    .select("id", { count: "exact", head: true })
+    .select("id, scheduled_date, start_time, task_id")
     .eq("user_id", user.id)
     .eq("kind", "ai")
     .gte("scheduled_date", effectiveStart);
+
+  if (fetchErr) {
+    return { success: false as const, error: fetchErr.message };
+  }
+
+  const idsToDelete = (aiBlocks ?? [])
+    .filter((b) =>
+      shouldDeleteAiBlockOnReset(
+        {
+          scheduled_date: b.scheduled_date as string,
+          start_time:     b.start_time as string,
+          task_id:        b.task_id as string | null,
+        },
+        todayStr,
+        nowMin,
+        effectiveStart,
+        protectedTaskIds,
+      ),
+    )
+    .map((b) => b.id as string);
+
+  if (idsToDelete.length === 0) {
+    revalidatePath("/planner");
+    revalidatePath("/", "layout");
+    return { success: true as const, deleted: 0 };
+  }
 
   const { error } = await supabase
     .from("scheduled_blocks")
     .delete()
-    .eq("user_id", user.id)
-    .eq("kind", "ai")
-    .gte("scheduled_date", effectiveStart);
+    .in("id", idsToDelete)
+    .eq("user_id", user.id);
 
   if (error) {
     console.error("[planner] clearPlannerRange error:", error.message);
@@ -2439,11 +2498,12 @@ export async function clearPlannerRange(startDate: string, _endDate?: string) {
   }
 
   console.log(
-    `[planner] clearPlannerRange: deleted ${total ?? 0} AI block(s) from ${effectiveStart} forward`,
+    `[planner] clearPlannerRange: deleted ${idsToDelete.length} AI block(s) ` +
+    `(tz=${timeZone}, today=${todayStr}, nowMin=${nowMin}, from=${effectiveStart})`,
   );
   revalidatePath("/planner");
   revalidatePath("/", "layout");
-  return { success: true as const, deleted: total ?? 0 };
+  return { success: true as const, deleted: idsToDelete.length };
 }
 
 // ── getTodayStudyBlocks ───────────────────────────────────────────────────────
